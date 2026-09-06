@@ -1,0 +1,68 @@
+# Decision Register
+
+本文件是**决策队列**，不是规则文本：每条是一个需要 Owner 裁决的问题。裁决后记 DECIDED + 日期 + 一句结论；不追加解释性条文。禁止用默认值掩盖 OPEN。
+
+状态：OPEN（未决）/ DECIDED（已决，附日期）/ ACCEPTED-RISK（不决但接受风险，附签字人与期限）。
+
+## P0 — 阻塞任何生产写入
+
+| ID | 问题 | Owner | 状态 |
+|---|---|---|---|
+| DEC-001 | 旧领星 MCP 密钥吊销与轮换完成了吗（含使用日志核查）？2026-08-28 Owner 决定延后轮换；延后期间旧 key 维持"已暴露"定性。2026-08-28 晚 Owner 在对话中直接提供 key 并指示本会话连接调研（改写"平台不触 key"的先前安排）——会话仅执行只读调用（help/search/action:ad_auth_shops），key 未落任何文件；key 再次暴露于对话，轮换必要性不变 | 安全 Owner | OPEN |
+| DEC-002 | 领星 MCP 凭据绑定模式：个人/企业/应用？能否创建按店铺限权、只读、可轮换的多密钥？2026-08-28 实测：当前单 key 可见 74 店铺 14 国全量授权列表——广域 key（模式 3/DEC-103）实锤，profile 白名单授权不可省 | 技术 Owner（向领星核实） | OPEN |
+| DEC-003 | 领星权限变更/撤销后 MCP 生效延迟是多少？能否读取主体的精确动作权限？ | 技术 Owner | OPEN |
+| DEC-004 | 候选写工具的运行时 Schema、幂等、条件写(CAS)、超时语义、批量部分成功语义？2026-08-28 实测：入参 Schema 已全量取得并入库（docs/evidence/lx-schema-*），批量上限 1-1000、双层信封（网关 code + 业务 code/traceId）已知；幂等/CAS/部分成功仍未实测 | 技术 Owner（合同测试） | OPEN |
+| DEC-005 | 写后哪个读源是权威？传播延迟分布？是否有 Provider 操作日志可做归因确认？2026-08-28 实测：LX-MCP 写工具信封强制 module_name="Mcp" 作日志来源——领星操作日志可按来源区分 MCP 写入，归因对账路径存在 | 技术 Owner | OPEN |
+| DEC-006 | 每个 Shop/Profile 的业务责任人是谁？MVP Action/Field 白名单与金额风险上限？（已知：使用者为 2-5 人小团队——2026-08-28 业务 Owner 口头；责任人名单与金额上限仍未决） | 业务 Owner | OPEN |
+| DEC-007 | 合法审批人名单；公司是否接受"广域共享 key + 公司 ACL"模式的残余 blast radius？ | 业务+安全 Owner | OPEN |
+| DEC-008 | 公司 IdP/SSO 是什么？MFA 与撤权传播 SLO？ | 技术+安全 Owner | OPEN |
+| DEC-010 | **写通道选型**（评审 P0 ENG-01）：候选顺序经 2026-08-28 Owner 证词修订为 LX-MCP 主候选、开放平台 REST 备援、Amazon Ads 官方 MCP（2026-02 beta【OBSERVED-web】）新备援、不建四选一（ADR-003 增补）。2026-08-28 快照实测（DEC-009 已决）：LX-MCP 目录含 15 个 Amazon 广告写工具（SP/SB/SD × campaign/adGroup/target/keyword，含 negative 投放），action 信封原生钉 catalogVersion+schemaVersion——主候选证据大幅增强；关闭仍需写合同测试（幂等/批量部分成功/限流分类，DEC-004）。未决则真实写接入不得开工 | 业务+技术 Owner | OPEN |
+| DEC-011 | **L 级语义裁决**（评审 P0 PS-01）：批准"主文档 L0-L4 为唯一权威；《AmazonAds-Codex-Skills-MCP-自动化项目书》降级为策略素材源，其 L 级/审批标记/数值默认值一律无效，L 级重命名后方可引用"。Gate 0 退出条件含此项 | 业务 Owner | OPEN（评审已给建议裁决） |
+| DEC-012 | **个人 MCP key 治理**（评审 P1 SEC-02）：盘点组织内已开通的领星 MCP 与已发放密钥；决定开关策略（关闭/限名单/书面接受残余风险）；正式询问领星密钥级审计与多密钥能力 | 安全 Owner | OPEN |
+| DEC-013 | **Gate 1 凭据方案**（评审 P0 SEC-01）：低权限子账号 MCP key 或接口级授权剥离写 + 写拒绝测试证明；不可行则凭据托管自 Gate 1 起按 Executor 级标准。Gate 1 退出条件由"无生产 Write Credential"改写为"凭据写能力已被证实性禁用并通过写拒绝测试" | 安全 Owner | OPEN |
+| DEC-014 | **采用率门槛值**（评审 P1 LP-04）：Gate 3 进入的治理占比阈值与 L1.5 闭环率指标取值（L1.5 台阶本身已由 DEC-111 确认） | 业务 Owner | OPEN |
+| DEC-016 | 向领星正式核实：企业多 AppId、接口级授权(2001004)能否剥离写接口、SB/SD 写是否在规划、操作日志保留期 | 技术 Owner | OPEN |
+| DEC-118 | **业务场景目标函数三件套**（2026-08-28 Owner 需求：清仓 / 打新品 / 推高销量）：逐一冻结可计算定义与数据依赖——CLEARANCE_VELOCITY（库存 cover_days 源 + 单件亏损上限）、LAUNCH_RAMP（爬坡口径 + 归因成熟期实测）、SALES_GROWTH（单位经济基线 DEC-020/021 + Break-even ACOS）。任一未冻结则该目标签发 fail-closed（代码已强制 OBJECTIVE_NOT_READY） | 业务+数据 Owner | OPEN |
+| DEC-119 | **多控制器接管边界**（2026-08-28 实测引出）：平台是否采纳"默认只接管无领星策略托管的对象（写前必查 ads_strategy/is_apply_time），接管分时托管实体需 Owner 显式授权基准值同步"为硬原则？V3 补：策略包时段组件连带此裁决二选一——平台自任时段控制器（对象须无分时托管 + 新建钟控运行时 + DEC-115 对钟控写的适用性需一并澄清）vs 委托领星分时（对象变 TOOL_MANAGED，同 bundle 的竞价/预算组件在该对象上被 custody 硬闸拒绝） | 业务+技术 Owner | OPEN |
+| DEC-121 | **人机互斥参数**（2026-08-28 Owner 需求"人操作时 AI 不能操作"）：机制已实施（ObjectCustody 四层控制权 + 带外人工变更检测让位），待定值：HUMAN_PRIORITY 默认冷却时长（现 72h）；平台界面上人改 AI 托管对象是否强制"先接管"仪式。带外人工操作只能滞后检测无法实时阻止——此不对称已如实入文档，Owner 须知悉 | 业务 Owner | OPEN |
+| DEC-122 | **勾选集与审批形态**（2026-08-28 Owner V3 需求"类领星清单勾选布置任务"）：跨层级勾选容器（SelectionSet）如何映射审批——现合同为单层 selector、单 intent、≤200 对象（SELECTOR_TOO_BROAD）、逐集合冻结 Hash（AX-07）；待定：>200 勾选上调上限还是强制拆张；"整包一次批"是否开例外（默认不开，逐集合/逐指令审批）；engagement 是否新增对象集入口字段（focus 保留为文本意图） | 业务 Owner | OPEN |
+| DEC-123 | **镜像同步节奏与店铺白名单**（V3"下载到本地并同步"）：实测 8 店 7 天 campaign 约 4.0 万行/keyword 约 8.5 万行、QPS=1 → 74 店全量周期同步不可行；待定值：白名单店铺清单、全量/增量周期（建议白名单起步 + 日级全量 + 实测后定增量间隔；快于领星缓存刷新的同步只得重复数据，同 DEC-115 数据物理） | 业务+技术 Owner | OPEN |
+| DEC-124 | **策略包基数**（V3"综合策略"）：StrategyBundle 采用编排层形态——引用 N 张既有授权书 + 共享退出条件 + 原子撤销（推荐：不动 DEC-113 每 rule_class 显式目标函数、DEC-114 一授权书一参数包）？替代形态"单授权书装多参数包"需修订两项已决裁决。bundle 不得发明"包级综合目标函数"替代成员目标 | 业务 Owner | OPEN |
+| DEC-125 | **自动退出语义**（V3"解绑逻辑"）：解绑三型中到期退出已有承载（valid_days≤30 + MANDATE_EXPIRED）；止损/达标退出需新建 ExitGuard（累计结果记账 + 阈值谓词）。待定：触发后 = 暂停回到人（推荐，与"AI 不可撤销授权书"一致）还是自动撤销授权书；止损阈值字段（金额上限/结果下限）入 MandateBounds 还是 bundle 层 | 业务 Owner | OPEN |
+
+## P0 — 阻塞策略可信度（Gate 2 前）
+
+| ID | 问题 | Owner | 状态 |
+|---|---|---|---|
+| DEC-020 | 成本/退款/库存/汇率的权威数据源与 Owner？ | 数据 Owner | OPEN |
+| DEC-021 | 第一阶段主业务目标（按 Campaign）与 Break-even ACOS 正式定义？ | 业务 Owner | OPEN |
+| DEC-022 | 哪些对象同时受 Amazon 规则/领星规则/人工/代理商控制？能否建立单控制器 Canary 窗口？2026-08-28 实测控制器名单：领星 RuleEngine（自动规则）/StepBudget（递增预算）/TimingTactics（分时策略，会按时段覆盖竞价与预算），读侧 ads_strategy 字段可辨托管状态 | 业务+技术 Owner | OPEN |
+| DEC-023 | AI 可否无人值守触发对领星生产 API 的真实取数？2026-08-30 实测：`generate_negation_candidate_set` 是 AI 可调用工具，而 `POST /api/workbench/sync` 要求 HUMAN；即席模式（不带 mandate_id）不受配额/最小间隔/运行时段约束，一次调用是一轮多页读取（14 天窗口实测 2046 行 / 约 20 秒），节流仅靠 1.1s sleep 与 900s 缓存。当前处置是一道显式开关（ADS_CP_STRATEGY_LX_ENABLED），但**权限边界本身由「谁配了 key」决定**，未经裁决 | 业务+安全 Owner | OPEN |
+| DEC-024 | `spends` 是站点本币还是折算后的口径？它直接喂 `min_spend` 门槛，折算过则我们盖的币种章是系统性谎言。2026-08-30 已按站点推币种（MARKETPLACE_CURRENCY），该推断建立在「本币」假设上。验证方式：取一个已知活动，对比领星后台显示花费与网关返回的 `spends`。**首次真实写入前必须完成** | 技术 Owner（后台比对） | OPEN |
+| DEC-025 | commit `42d705c`（2026-08-29）的**提交信息**含真实 Profile ID，违反 SECURITY.md「仓库零 Secret」。2026-08-30 核实：工作树与已跟踪文件内容干净，只有这一条 commit message；该提交仍在 HEAD 历史上，其后 38 个提交；仓库当前**无任何远端**，历史从未离开本机。清除需改写这 38 个提交（破坏性、不可逆），是否执行由 Owner 定 | 安全 Owner | OPEN |
+
+## 已决
+
+| ID | 裁决 | 日期 |
+|---|---|---|
+| DEC-100 | 平台价值主张修订为四项：统一只读事实；AI 分析提案；AI 参与写入的唯一安全通道；全量观察对账。不宣称"唯一写路径"（员工可直接操作领星后台，平台只能观察检测）。 | 2026-08-28 |
+| DEC-101 | MVP 角色塌缩为 6（Viewer/Analyst/Operator/Approver/Admin/Auditor），SoD 用请求级冲突矩阵按 human_person_id 实现；18 角色目录留作规模化参考。 | 2026-08-28 |
+| DEC-102 | MVP 只开 R2 单人审批；R3+ 保持 Initial-Deny，不实现双审流程（推迟到 Gate 4 前）。 | 2026-08-28 |
+| DEC-103 | 授权模型按"广域共享 key（模式 3）"为默认现实设计；每用户委托/窄凭据作为升级路径。 | 2026-08-28 |
+| DEC-104 | Provider 拓扑修订为双通道三源（MCP 子账号读 / 开放平台 REST 批量读写 / 操作日志对账），端口不动实现换绑（ADR-003）。 | 2026-08-28 |
+| DEC-105 | StrategySpec 表达式 DSL 降级为 rule_class 闭集枚举 + 参数包白名单；DSL 移 P2，触发条件"≥2 团队需要不发版改规则"。 | 2026-08-28 |
+| DEC-106 | MVP 回测 = 决策重放（触发正确性/ABSTAIN/振荡），结果栏强制 INCONCLUSIVE；结果型回测在 bid→CPC 映射经 Canary 实测校验后解锁。 | 2026-08-28 |
+| DEC-107 | 禁止 SQLite/内存库作触库测试替身（RLS/SKIP LOCKED/SET LOCAL 为 PG 专有语义）；CI 使用真实 PostgreSQL；纯业务逻辑以不触库纯函数编写。 | 2026-08-28 |
+| DEC-108 | 执行器物理拆为 uv workspace 独立包（依赖单向 executor→core，CI 断言）；已实施。 | 2026-08-28 |
+| DEC-109 | 限流类"证明未执行"拒绝走有界重投通道（不杀 Intent），本地桶感知节流置于单提交 CAS 之前；安全不变量精确化为"可能已生效的提交 ≤ 1"；已实施并有测试。 | 2026-08-28 |
+| DEC-110 | 完整 WORM 副本 defer 至 Gate 4 准入前；首期 = append-only 异地导出 + 完整性 Hash；Control Ledger 同步预写不可妥协。 | 2026-08-28 |
+| DEC-111 | 业务 Owner 裁决：自动化起点 = 阶梯式（AI 提案 → 人批准 → 指标达标后逐级解锁自动），确认 L1/L1.5 台阶；终态目标为有界自动。 | 2026-08-28 |
+| DEC-015 | 业务 Owner 裁决：单个 Negative Exact 选定为首批策略（原问题"是否列为白名单候选"以更强形式关闭）。 | 2026-08-28 |
+| DEC-112 | 首批策略实现形态 = NEG_EXACT 候选纵切（证据门 conversions==0 不可参数化 + 参数包白名单 + 集合冻结 Hash 审批 + Bulk 行导出 + 操作日志核验），零 Provider 写；已实施并有测试（`strategies/`）。 | 2026-08-28 |
+| DEC-113 | 业务 Owner 裁决：策略结论禁止无目标函数的"优化好了"语义——每个 rule_class 必须绑定显式目标函数与估计量。NEG_EXACT 目标函数 = WASTED_SPEND_REMOVED（估计量 = 已核验候选的窗口花费之和，causality 恒标 INCONCLUSIVE，因果版本待 holdout）；已实施（`estimate_waste_removed`）。 | 2026-08-28 |
+| DEC-114 | 业务 Owner 裁决："批准"演进为目标授权（填写目标 → 形成参数列表 → 系统对着参数列表运行）。实现为 AutomationMandate：目标函数 + 参数包合同（自包含，授权模式下拒绝调用方参数覆盖）+ 配额（日运行数/单次候选数/有效期 ≤30 天）+ 人签发、单人可撤销、AI 不可签不可撤。当前消费点 = 候选自动生成；执行侧自动化字段待 Gate 3 授权后以重签方式扩展。已实施（`strategies/mandate.py`）。 | 2026-08-28 |
+| DEC-115 | 调整频次入授权书合同（Owner 需求）：`run_interval_minutes` 白名单 [60, 10080]，间隔未到运行即拒（RUN_TOO_SOON）。"10 分钟一次"被白名单排除——理由是数据物理：搜索词报告日级、领星读为 Amazon 缓存（滞后分钟~天级），快于数据刷新的运行读到同一份缓存、只产生重复决策；否词类建议 1440。已实施并有测试。 | 2026-08-28 |
+| DEC-116 | 业务目标场景入白名单枚举（清仓/打新品/推高销量 + 降无效花费）：每个目标绑定数据就绪条件，未就绪签发即拒并列出缺项（OBJECTIVE_NOT_READY，缺项定义见 DEC-118）。已实施（`ObjectiveKind` + `OBJECTIVE_DATA_REQUIREMENTS`）。 | 2026-08-28 |
+| DEC-117 | 广告历史数据库确认为 P1 首工单（Owner 需求：保存现在广告的数据用于历史记录）：PostgreSQL append-only 快照（recorded_at/source_as_of 双时间 + raw 留档），采集接通当天即入库；Mock 阶段不建库（无真实数据可存）。CI 用真实 PG（DEC-107）。2026-08-28 补：任务/诊断报告/计划/调整指令同库入表；调整历史由 Control Ledger 承担；向量数据库判定为当前非需求（Owner 所需均为结构化时序查询，PG 即正解），不预建。 | 2026-08-28 |
+| DEC-009 | 快照冲突核实完成（2026-08-28 实测，证据 docs/evidence/lx_mcp_snapshot_20260828T085423Z.json 等）：判定为**能力漂移（网关化改版）**——官方端点现为 help/search/action 三元工具网关，业务目录 basic-open-online-20260825-v3 共 137 工具（116 读/21 写），Amazon 广告写工具 15 个（SP 6 / SB 4 / SD 5）实测在目录（含 negative 投放）；"59 工具直暴"形态已不存在。Owner 亲手提供 key 并指示本会话执行（改写"持有者本人跑"安排） | 2026-08-28 |
+| DEC-120 | 任务层立为一等域对象（2026-08-28 Owner 需求"定义任务太简陋"）：TaskEngagement 生命周期 DRAFT→DIAGNOSED→PLANNED→RUNNING→CLOSED（诊断报告=证据+建议闭集，计划必须引用报告出处，AI 不能批计划）+ AdjustmentDirective 中途介入（selector+intent 白名单→现值/新值预览→Hash 审批；空命中与超宽命中显式报错）。内核已实施（`tasks/`，19 测试）；诊断生成器待 P1 真实读通道。 | 2026-08-28 |

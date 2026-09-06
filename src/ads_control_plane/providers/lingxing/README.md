@@ -1,0 +1,84 @@
+# 领星 Provider Adapter — 读侧部分解除，写侧仍锁
+
+## 边界
+
+**读侧**：`search_terms.py` 已落地（NEG_EXACT 的真实搜索词源）。合同测试见
+`tests/unit/test_lingxing_search_terms.py`。
+
+**写侧**：Write Adapter 不在本目录——它只允许存在于 `executor/` 包（ADR-002），
+且在 DEC-010 写通道选型落地前不得动工。
+
+本仓库任何环境不得配置真实密钥（SECURITY.md）。
+
+## 2026-08-30 更新前的状态，与它为什么不再成立
+
+此前本目录整体标 `BLOCKED_MISSING_SANITIZED_CONTRACT`，理由是「没有经授权、脱敏并
+版本固定的领星 Tool Schema / Response Fixture，不得凭工具名称或旧聊天记忆臆造字段」。
+对照今天的事实，其中两条已经不成立：
+
+- **Schema 已录，不是臆造**。2026-08-28 经网关 `search` 工具实测录得 10 份工具 schema
+  （`docs/evidence/lx-schema-*.json`），含本目录用到的
+  `ad_campaign_search_term_report-20260828.json`。同一批实测让 DEC-009（快照冲突）
+  判定关闭，快照在 `docs/evidence/lx_mcp_snapshot_20260828T085423Z.json`。
+  README 此前把这项已完成的工作仍列为待办。
+- **「本目录保持空实现」与仓库现状不符**。`adapters/lx_read.py` + `mirror/sync.py`
+  早已带着实测 schema 在生产路径上跑 9 个只读工具，且有结构性防写
+  （`READ_TOOL_ALLOWLIST` 之外的 toolId 在任何网络调用之前即被拒）。
+
+DEC-013 仍 OPEN，如实保留。但它管的是**凭据的写能力**——原文是 Gate 1 退出条件
+「凭据写能力已被证实性禁用并通过写拒绝测试」——而不是只读 provider 的开工前置；
+同一把凭据下 `adapters/lx_read.py` 已经落地，是既成先例。
+
+## 响应样例（2026-08-30 补上）
+
+此前 `docs/evidence/` 里 16 份证据的 `responseDescription` 一律为 `null`，只录了入参
+schema，没有一份响应样例。现已录得
+`lx-response-ad_campaign_search_term_report-20260830.json`（脚本
+`scripts/lx_search_term_fixture.py`，只读、密钥只经环境变量、不落盘）。
+
+被冻结成合同的是其中的**字段清单**（每个键观测到的类型集合、null 率、是否出现在
+汇总行），它天然不含业务数据，却正是 mapper 依赖的东西。它印证了实现里的四条假设：
+
+- `query` / `ad_group_id` / `campaign_id` 的 `null_rate` 恰为 1/31，且 `in_summary_row=false`
+  ——汇总行里这三个字段确实是 null，按「身份字段为空」判定汇总行成立；
+- `orders` / `clicks` 的类型集合是 `["int", "str"]`——同一响应里类型确实不一致，
+  所以解析器绝不能靠类型区分汇总行与数据行；
+- 没有任何 `currency` 字段——币种只能外部逐店声明；
+- 没有 `sid` / `store_id`——`shop_external_id` 只能从 `ad_auth_shops` 取；
+- 也没有任何源侧新鲜度字段（`update_time` 之类），所以领星端上来的是不是 Amazon 的陈缓存，
+  我们量不到。`data_as_of` 取**取数时刻**（与 Mock 源同一条契约），窗口覆盖范围由
+  `window_start`/`window_end` 单独承载。
+
+  这一行此前写的是「`data_as_of` 只能取窗口末端，`STALE_DATA` 在正常路径下几乎不响」，
+  两句都与事实相反：窗口末端已被归因滞后刻意退了 3 天，`now - window_end` 恒落在
+  `[48h, 72h)`，而默认门槛 24h ——2026-08-30 实测真实店 3815 条记录 **100% ABSTAIN**，
+  一条候选也产不出来，且参数白名单上限恰为 72h，`[1,47]` 这段取值可证明恒失败。
+  刻意等 3 天让订单结算不叫数据陈旧；把一个设计参数塞进新鲜度门，量出来的是常数。
+  修正后同一台机器同一个店：默认参数 30 天 → 3815 条、0 弃权、27.6 秒。
+
+行内 ID 用保形替换（同长度、同前导零、同 JSON 类型；盐随机生成、用后即弃），
+名称与搜索词换合成值，指标保留格式改数值，`request_id`/`traceId` 剥离。
+文件顶层的 `sanitized` 声明由录制脚本写入，零 Secret 守卫
+（`tests/unit/test_no_real_ids_in_repo.py`）据它放行本文件的 ID 字段——
+忘了脱敏的人也会忘了加声明，守卫照样拦住。
+
+`tests/unit/test_lingxing_search_terms.py` 的夹具则是**手工合成**的，不是这份证据的
+拷贝——证据要忠实，夹具要刁钻（真实抽样里未必有前导零 ID、千分位、空 query 这些行，
+而它们恰恰是最需要钉住的分支）。
+
+## 已知未验证项（首次真实运行前必须确认）
+
+- **`spends` 是不是站点本币**：领星有「原币种／人民币」两种显示口径。若返回的是
+  折算值，我们按绑定盖的币种章就是系统性谎言，而它直接喂 `min_spend` 门槛。
+  验证方法：取一个已知活动，对比领星后台显示的花费与网关返回的 `spends`。
+- **`targeted_type=not_negatived` 的粒度**：按 (词, 广告组) 还是按匹配方式？
+  是否包含活动级否定？若它筛掉的行恰好携带 orders，聚合结果会偏。
+- **`is_asin` 的非零取值**：2026-08-30 抽样 30 行全为 `0`，**未观测到任何非零值**。
+  代码按「非零即 ASIN」处理（工具 schema 的 `search_type` 有 `asin` 一项，字段名也这么说），
+  但这是推的不是实测的。判错的方向是有代价的：判成关键词会让人在领星加一条挡不住
+  任何东西的否定精确词，白做工且从证据里看不出来。验证方法：对一个已知有 ASIN 型
+  搜索词的活动取数，确认那些行的 `is_asin` 到底是什么值。
+
+已答（2026-08-30 实测）：**汇总行每页都有**。同一个店一轮取数 2090 行分 3 页，
+`skipped_summary_rows=3`——每页首行各一条。逐行判定本来就两种情况都对，这条实测
+只是把「不知道」换成了「知道」。
