@@ -9,6 +9,9 @@ dependencies = [
     "uvicorn>=0.52.4",
 ]
 
+[project.scripts]
+ads-pack = "ads_control_plane.sfw.__main__:main"
+
 [dependency-groups]
 dev = [
     "mypy>=2.3.1",

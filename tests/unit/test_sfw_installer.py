@@ -1,0 +1,787 @@
+"""安装器测试：只测计划与渲染，绝不执行。
+
+这里没有一处会调 dscl/launchctl/sysadminctl，也不会写 /Library、/Users/Shared 或任何家目录
+（规格 §0 第 1 条）。`execute` 只在 dry_run 与「不是 root 就拒绝」两条路上被碰到。
+"""
+
+from __future__ import annotations
+
+import ast
+import json
+import os
+import plistlib
+import re
+import shutil
+import socket
+import sys
+import tomllib
+import types
+import uuid
+from collections.abc import Mapping, Sequence
+from pathlib import Path
+
+import pytest
+
+from ads_control_plane.adapters.lx_read import LxTransportError
+from ads_control_plane.sfw import __main__ as cli
+from ads_control_plane.sfw import installer
+from ads_control_plane.sfw.config import (
+    DEFAULT_EXPORT_DIR,
+    DEFAULT_ROOT,
+    SERVICE_USER,
+    ConfigError,
+    parse_config,
+    render_config_template,
+)
+from ads_control_plane.sfw.installer import (
+    REGISTRATION_KEYS,
+    HostState,
+    InstallerError,
+    Step,
+    doctor,
+    execute,
+    judge_child_cannot_read,
+    judge_directory,
+    judge_export_dir,
+    judge_port,
+    judge_registration,
+    judge_service_user,
+    plan_install,
+    plan_start,
+    plan_stop,
+    registration_json,
+    render_plist,
+    render_shops,
+    shops,
+    wait_for_401,
+)
+from tests.unit.test_no_real_ids_in_repo import REPO, SYNTHETIC_IDS, _is_suspect, _offenders_in_text
+
+ORG = uuid.UUID("00000000-0000-4000-8000-000000000001")
+CONN = uuid.UUID("00000000-0000-4000-8000-000000000002")
+BEARER = "0123456789abcdef" * 2
+KEY = "sk-test-key-never-printed"
+CJK = re.compile(r"[一-鿿]")
+REAL_ASSETS = Path(installer.__file__).parent / "assets"
+
+VALID_CONFIG = f"""
+organization_id = "{ORG}"
+connection_id = "{CONN}"
+sfw_bearer = "{BEARER}"
+
+[lingxing]
+url = "http://lx.invalid/mcp"
+key = "{KEY}"
+
+[[stores]]
+profile_id = "1000000000000001"
+sid = "2000000000000001"
+marketplace = "US"
+currency = "USD"
+nickname = "美国店"
+
+[[stores]]
+profile_id = "1000000000000002"
+sid = "2000000000000002"
+marketplace = "JP"
+currency = "JPY"
+nickname = "日本店"
+
+[thresholds.min_spend]
+USD = "20.00"
+JPY = "3000"
+"""
+
+SHOP_ROWS: list[object] = [
+    {"profile_id": "1000000000000001", "sid": "2000000000000001", "country": "us"},
+    {"profile_id": 1000000000000002, "sid": 2000000000000002, "country": "JP"},
+    {"profile_id": "1000000000000001", "sid": "2000000000000007", "country": "XX"},
+    {"profile_id": "", "sid": "2000000000000009", "country": "DE"},  # 缺 profile_id → 跳过
+    "not a row",
+]
+
+
+class FakeClient:
+    calls: list[tuple[str, str, str, Mapping[str, object]]] = []
+    rows: Sequence[object] = SHOP_ROWS
+    error: Exception | None = None
+
+    def __init__(self, url: str, key: str) -> None:
+        self.url, self.key = url, key
+
+    def fetch_page(self, tool_id: str, params: Mapping[str, object]) -> Mapping[str, object]:
+        FakeClient.calls.append((self.url, self.key, tool_id, params))
+        if FakeClient.error is not None:
+            raise FakeClient.error
+        return {"rows": list(FakeClient.rows), "total": len(FakeClient.rows)}
+
+
+@pytest.fixture(autouse=True)
+def _reset_fake_client() -> None:
+    FakeClient.calls = []
+    FakeClient.rows = SHOP_ROWS
+    FakeClient.error = None
+
+
+@pytest.fixture
+def assets(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """随包资源换成临时目录：AGENTS.md 与 fd.md 由 WP-2 提供，这个 worktree 里可能还没有。"""
+    directory = tmp_path / "assets"
+    shutil.copytree(REAL_ASSETS, directory)
+    (directory / "AGENTS.md").write_text("测试桩：给模型的纪律\n", encoding="utf-8")
+    (directory / "fd.md").write_text("测试桩：那一句话\n", encoding="utf-8")
+    monkeypatch.setattr(installer, "ASSETS", directory)
+    return directory
+
+
+@pytest.fixture
+def private_config(tmp_path: Path) -> Path:
+    """0600 的合法配置；导出目录指向临时目录（真目录在 /Users/Shared，测试不碰）。"""
+    export_dir = tmp_path / "导出"
+    export_dir.mkdir()
+    path = tmp_path / "config.toml"
+    paths = f'export_dir = "{export_dir}"\nrun_log_path = "{tmp_path / "运行记录.csv"}"\n'
+    path.write_text(paths + VALID_CONFIG, encoding="utf-8")
+    os.chmod(path, 0o600)
+    return path
+
+
+def _plan(assets: Path, tmp_path: Path, **overrides: object) -> tuple[Step, ...]:
+    kwargs: dict[str, object] = {
+        "wheel": tmp_path / "dist" / "ads_control_plane-0.1.0-py3-none-any.whl",
+        "child_user": "kid",
+        "child_home": tmp_path / "home" / "kid",
+        "uv": tmp_path / "bin" / "uv",
+        "sfw_bearer": BEARER,
+        "organization_id": ORG,
+        "connection_id": CONN,
+    }
+    kwargs.update(overrides)
+    return plan_install(**kwargs)  # type: ignore[arg-type]
+
+
+def _free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+# ------------------------------------------------------------------ 登记 JSON
+
+
+def test_registration_json_obeys_the_host_contract() -> None:
+    payload = registration_json(BEARER)
+    assert set(payload) <= REGISTRATION_KEYS
+    assert set(payload) == REGISTRATION_KEYS
+    assert re.fullmatch(r"[A-Za-z0-9_-]{1,80}", str(payload["name"]))
+    assert payload["url"] == "http://127.0.0.1:8790/mcp"
+    timeout = payload["tool_timeout_sec"]
+    assert type(timeout) is int and 1 <= timeout <= 3600
+    assert payload["auth"] == "bearer" and payload["secret"] == BEARER
+    for forbidden in ("env", "cwd", "command", "args"):
+        assert forbidden not in payload
+    assert judge_registration(payload)[1] is True
+    assert registration_json(BEARER, port=8791)["url"] == "http://127.0.0.1:8791/mcp"
+
+
+@pytest.mark.parametrize(
+    ("mutation", "fragment"),
+    [
+        ({"env": {}}, "不认的键"),
+        ({"tool_timeout_sec": 3601}, "tool_timeout_sec"),
+        ({"tool_timeout_sec": True}, "tool_timeout_sec"),
+        ({"tool_timeout_sec": "3600"}, "tool_timeout_sec"),
+        ({"name": "ads pack"}, "name"),
+        ({"url": "http://127.0.0.1:8790/mcp#x"}, "片段"),
+        ({"url": "http://u:p@127.0.0.1:8790/mcp"}, "用户名"),
+        ({"url": "http://example.invalid/mcp"}, "https"),
+        ({"url": "http://127.0.0.1:notaport/mcp"}, "解析"),
+        ({"auth": "basic"}, "auth"),
+        ({"secret": "a\nb"}, "secret"),
+    ],
+)
+def test_registration_self_check_names_each_violation_in_chinese(
+    mutation: Mapping[str, object], fragment: str
+) -> None:
+    payload: dict[str, object] = {**registration_json(BEARER), **mutation}
+    name, passed, detail = judge_registration(payload)
+    assert (name, passed) == ("登记 JSON", False)
+    assert fragment in detail and CJK.search(detail)
+
+
+# ------------------------------------------------------------------ plist
+
+
+def _rendered(**overrides: object) -> dict[str, object]:
+    kwargs: dict[str, object] = {
+        "venv_python": DEFAULT_ROOT / "venv" / "bin" / "python",
+        "config_path": DEFAULT_ROOT / "config.toml",
+        "port": 8790,
+        "log_path": installer.LOG_PATH,
+    }
+    kwargs.update(overrides)
+    text = render_plist(**kwargs)  # type: ignore[arg-type]
+    document = plistlib.loads(text.encode("utf-8"))
+    assert isinstance(document, dict)
+    return document
+
+
+def test_plist_runs_as_the_service_user_with_absolute_paths() -> None:
+    plist = _rendered()
+    assert plist["Label"] == "local.ads-pack"
+    assert plist["UserName"] == "_adspack"
+    assert "EnvironmentVariables" not in plist
+    argv = plist["ProgramArguments"]
+    assert isinstance(argv, list) and Path(argv[0]).is_absolute()
+    assert argv == [
+        "/Library/Application Support/ads-pack/venv/bin/python",
+        "-m",
+        "ads_control_plane.sfw",
+        "serve",
+        "--config",
+        "/Library/Application Support/ads-pack/config.toml",
+        "--port",
+        "8790",
+    ]
+    assert plist["KeepAlive"] is True and plist["RunAtLoad"] is True
+    assert plist["WorkingDirectory"] == "/Library/Application Support/ads-pack"
+    assert plist["StandardOutPath"] == plist["StandardErrorPath"]
+    assert plist["StandardOutPath"] == "/Library/Application Support/ads-pack/logs/ads-pack.log"
+
+
+def test_plist_escapes_xml_and_refuses_relative_paths() -> None:
+    plist = _rendered(venv_python=Path("/opt/a&b/<venv>/bin/python"))
+    argv = plist["ProgramArguments"]
+    assert isinstance(argv, list) and argv[0] == "/opt/a&b/<venv>/bin/python"
+    with pytest.raises(InstallerError, match="绝对路径"):
+        render_plist(
+            venv_python=Path("venv/bin/python"),
+            config_path=DEFAULT_ROOT / "config.toml",
+            port=8790,
+            log_path=installer.LOG_PATH,
+        )
+
+
+# ------------------------------------------------------------------ config 示例
+
+
+def test_config_template_has_only_placeholders() -> None:
+    text = (REAL_ASSETS / "config.example.toml").read_text(encoding="utf-8")
+    assert text == render_config_template(
+        sfw_bearer="<安装时自动生成的口令，不要手改>", organization_id=ORG, connection_id=CONN
+    ), "示例文件必须与 render_config_template 的输出一致，否则两份文档会各说各话"
+    assert _offenders_in_text(REPO / "config.example.toml", text) == []
+    # 带引号的长数字串只能是合成 ID（UUID 里的数字段带连字符，不算）。
+    numbers = set(re.findall(r'"(\d{9,})"', text))
+    assert numbers and not any(_is_suspect(n) for n in numbers)
+    assert numbers <= SYNTHETIC_IDS
+    assert isinstance(tomllib.loads(text), dict)
+    with pytest.raises(ConfigError) as caught:  # 占位口令不是十六进制：照抄示例跑不起来
+        parse_config(text)
+    assert caught.value.code == "SFW_BEARER_INVALID"
+
+
+# ------------------------------------------------------------------ 安装计划
+
+
+def _by_path(steps: Sequence[Step], path: Path) -> list[Step]:
+    return [s for s in steps if s.path == path]
+
+
+def test_install_plan_covers_the_eight_admin_steps(assets: Path, tmp_path: Path) -> None:
+    home = tmp_path / "home" / "kid"
+    steps = _plan(assets, tmp_path, host=HostState(taken_ids=frozenset({200, 201, 202})))
+    argvs = [s.argv for s in steps if s.kind == "run" and s.argv is not None]
+
+    # ① _adspack：dscl 序列，uid 取 200..400 里第一个空号，无 shell、家目录 /var/empty、隐藏。
+    dscl = [a for a in argvs if a[0] == "/usr/bin/dscl"]
+    assert ("/usr/bin/dscl", ".", "-create", "/Users/_adspack", "UniqueID", "203") in dscl
+    assert ("/usr/bin/dscl", ".", "-create", "/Users/_adspack", "PrimaryGroupID", "203") in dscl
+    assert ("/usr/bin/dscl", ".", "-create", "/Groups/_adspack", "PrimaryGroupID", "203") in dscl
+    assert (
+        "/usr/bin/dscl",
+        ".",
+        "-create",
+        "/Users/_adspack",
+        "UserShell",
+        "/usr/bin/false",
+    ) in dscl
+    assert (
+        "/usr/bin/dscl",
+        ".",
+        "-create",
+        "/Users/_adspack",
+        "NFSHomeDirectory",
+        "/var/empty",
+    ) in dscl
+    assert ("/usr/bin/dscl", ".", "-create", "/Users/_adspack", "IsHidden", "1") in dscl
+
+    # ② 目录、托管 Python、venv、wheel、chown -R。
+    uv = str(tmp_path / "bin" / "uv")
+    python_dir = str(DEFAULT_ROOT / "python")
+    assert (uv, "--no-config", "python", "install", "--install-dir", python_dir, "3.12") in argvs
+    venv_cmd = next(a for a in argvs if a[0] == "/usr/bin/env")
+    assert venv_cmd[1] == f"UV_PYTHON_INSTALL_DIR={python_dir}"
+    assert venv_cmd[2:] == (
+        uv,
+        "--no-config",
+        "venv",
+        "--managed-python",
+        "--python",
+        "3.12",
+        str(DEFAULT_ROOT / "venv"),
+    )
+    wheel = str(tmp_path / "dist" / "ads_control_plane-0.1.0-py3-none-any.whl")
+    assert (
+        uv,
+        "--no-config",
+        "pip",
+        "install",
+        "--python",
+        str(DEFAULT_ROOT / "venv/bin/python"),
+        wheel,
+    ) in argvs
+    [chown] = [s for s in steps if s.kind == "chown"]
+    assert (chown.path, chown.owner) == (DEFAULT_ROOT, "_adspack:_adspack")
+    assert steps.index(chown) > max(steps.index(s) for s in steps if s.kind == "run")
+    for sub in ("", "python", "logs"):
+        [made] = [s for s in _by_path(steps, DEFAULT_ROOT / sub) if s.kind == "mkdir"]
+        assert made.kind == "mkdir" and made.mode == 0o755
+
+    # ③ config 模板：属 _adspack、0600、内容 = render_config_template。
+    [config] = _by_path(steps, DEFAULT_ROOT / "config.toml")
+    assert (config.kind, config.owner, config.mode) == ("write", SERVICE_USER, 0o600)
+    assert config.content == render_config_template(
+        sfw_bearer=BEARER, organization_id=ORG, connection_id=CONN
+    )
+
+    # ④ 导出目录属 _adspack 0755；上一级（运行记录所在）同样。
+    for directory in (DEFAULT_EXPORT_DIR, DEFAULT_EXPORT_DIR.parent):
+        [made] = _by_path(steps, directory)
+        assert (made.kind, made.owner, made.mode) == ("mkdir", "_adspack:_adspack", 0o755)
+
+    # ⑤ plist root:wheel 0644，内容能解析且以 _adspack 跑。
+    [plist] = _by_path(steps, Path("/Library/LaunchDaemons/local.ads-pack.plist"))
+    assert (plist.kind, plist.owner, plist.mode) == ("write", "root:wheel", 0o644)
+    assert plist.content is not None
+    assert plistlib.loads(plist.content.encode())["UserName"] == "_adspack"
+
+    # ⑥ 孩子家目录三样，属孩子；内容来自随包资源；斜杠命令文件名是 ASCII。
+    [agents] = _by_path(steps, home / "否定词" / "AGENTS.md")
+    assert (agents.kind, agents.owner, agents.mode) == ("write", "kid", 0o644)
+    assert agents.content == "测试桩：给模型的纪律\n"
+    [prompt] = _by_path(steps, home / ".codex" / "prompts" / "fd.md")
+    assert (prompt.kind, prompt.owner, prompt.content) == ("write", "kid", "测试桩：那一句话\n")
+    assert installer.PROMPT_NAME_RE.fullmatch(prompt.path.name if prompt.path else "")
+    [link] = _by_path(steps, home / "Desktop" / "否定词导出")
+    assert (link.kind, link.content, link.owner) == ("symlink", str(DEFAULT_EXPORT_DIR), "kid")
+
+    # ⑦ /usr/local/bin/ads-pack → venv 里的脚本。
+    [bin_link] = _by_path(steps, Path("/usr/local/bin/ads-pack"))
+    assert (bin_link.kind, bin_link.content) == ("symlink", str(DEFAULT_ROOT / "venv/bin/ads-pack"))
+
+    # 每一步都说得出为什么，且没有 chmod（新装的东西在建时就带权限）。
+    assert all(s.why and CJK.search(s.why) for s in steps)
+    assert not [s for s in steps if s.kind == "chmod"]
+
+
+def test_install_command_plan_never_touches_the_child_home_except_three_paths(
+    assets: Path, tmp_path: Path
+) -> None:
+    home = tmp_path / "home" / "kid"
+    allowed = {
+        home / "否定词" / "AGENTS.md",
+        home / ".codex" / "prompts" / "fd.md",
+        home / "Desktop" / "否定词导出",
+    }
+    touched = [
+        s for s in _plan(assets, tmp_path) if s.path is not None and s.path.is_relative_to(home)
+    ]
+    assert touched
+    for step in touched:
+        assert step.path is not None
+        if step.path in allowed:
+            continue
+        assert step.kind == "mkdir", f"{step.path} 不是那三样，也不是它们的父目录"
+        assert any(step.path in target.parents for target in allowed), step.path
+    for step in _plan(assets, tmp_path):
+        if step.kind == "run":
+            assert not any(str(home) in arg for arg in step.argv or ()), step.argv
+
+
+def test_install_plan_keeps_an_existing_config_and_user(assets: Path, tmp_path: Path) -> None:
+    steps = _plan(assets, tmp_path, host=HostState(service_uid=333, config_exists=True))
+    assert not [s for s in steps if s.kind == "run" and s.argv and s.argv[0] == "/usr/bin/dscl"]
+    config_steps = _by_path(steps, DEFAULT_ROOT / "config.toml")
+    assert [s.kind for s in config_steps] == ["chown", "chmod"]
+    assert config_steps[0].owner == "_adspack:_adspack" and config_steps[1].mode == 0o600
+    assert not any(s.kind == "write" and s.content and BEARER in s.content for s in steps)
+
+
+def test_install_plan_moves_the_run_log_next_to_a_custom_export_dir(
+    assets: Path, tmp_path: Path
+) -> None:
+    export_dir = Path("/Volumes/外置/ads-pack/导出")
+    steps = _plan(assets, tmp_path, export_dir=export_dir)
+    [config] = _by_path(steps, DEFAULT_ROOT / "config.toml")
+    document = tomllib.loads(config.content or "")
+    assert document["export_dir"] == str(export_dir)
+    assert document["run_log_path"] == "/Volumes/外置/ads-pack/运行记录.csv"
+    [link] = _by_path(steps, tmp_path / "home" / "kid" / "Desktop" / "否定词导出")
+    assert link.content == str(export_dir)
+
+
+@pytest.mark.parametrize(
+    ("overrides", "fragment"),
+    [
+        ({"wheel": Path("dist/x.whl")}, "绝对路径"),
+        ({"wheel": Path("/dist/x.tar.gz")}, ".whl"),
+        ({"child_user": "kid one"}, "登录名"),
+        ({"sfw_bearer": "short"}, "十六进制"),
+    ],
+)
+def test_install_plan_refuses_malformed_inputs(
+    assets: Path, tmp_path: Path, overrides: Mapping[str, object], fragment: str
+) -> None:
+    with pytest.raises(InstallerError, match=fragment):
+        _plan(assets, tmp_path, **overrides)
+
+
+def test_service_id_is_the_first_free_number_in_the_system_range() -> None:
+    assert installer.pick_service_id(frozenset()) == 200
+    assert installer.pick_service_id(frozenset({200, 201, 250})) == 202
+    with pytest.raises(InstallerError, match="没有空号"):
+        installer.pick_service_id(frozenset(range(0, 500)))
+
+
+def test_inspect_host_reads_the_directory_through_an_injected_query(tmp_path: Path) -> None:
+    def query(argv: Sequence[str]) -> str:
+        if "/Users" in argv:
+            return "_www  70\nkid  501\n_adspack  231\n"
+        return "wheel  0\nstaff  20\n_adspack  231\n"
+
+    host = installer.inspect_host(config_path=tmp_path / "missing.toml", query=query)
+    assert host == HostState(
+        service_uid=231, taken_ids=frozenset({70, 501, 231, 0, 20}), config_exists=False
+    )
+    assert installer.parse_dscl_list("junk line\nname\n  x  -1\n") == {"x": -1}
+
+
+def test_start_and_stop_plans_use_the_system_domain() -> None:
+    kickstart = ("/bin/launchctl", "kickstart", "-k", "system/local.ads-pack")
+    assert [s.argv for s in plan_start(loaded=False)] == [
+        ("/bin/launchctl", "bootstrap", "system", "/Library/LaunchDaemons/local.ads-pack.plist"),
+        kickstart,
+    ]
+    assert [s.argv for s in plan_start(loaded=True)] == [kickstart], (
+        "登记过的只重启，不再 bootstrap"
+    )
+    assert [s.argv for s in plan_stop()] == [("/bin/launchctl", "bootout", "system/local.ads-pack")]
+    asked: list[Sequence[str]] = []
+
+    def fake_exit_code(argv: Sequence[str]) -> int:
+        asked.append(argv)
+        return 0 if len(asked) == 1 else 113
+
+    assert installer.daemon_loaded(run=fake_exit_code) is True
+    assert installer.daemon_loaded(run=fake_exit_code) is False
+    assert asked == [("/bin/launchctl", "print", "system/local.ads-pack")] * 2
+
+
+def test_wait_for_401_polls_until_the_bearer_gate_answers() -> None:
+    answers = iter([None, 500, 401])
+    slept: list[float] = []
+    assert wait_for_401(8790, status=lambda url: next(answers), sleep=slept.append) is True
+    assert slept == [1.0, 1.0]
+    assert wait_for_401(8790, attempts=2, status=lambda url: 200, sleep=slept.append) is False
+
+
+# ------------------------------------------------------------------ 执行
+
+
+def test_execute_dry_run_prints_without_touching_and_real_run_needs_root(
+    assets: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    home = tmp_path / "home" / "kid"
+    steps = _plan(assets, tmp_path)
+    execute(steps, dry_run=True)
+    out = capsys.readouterr().out
+    assert out.count("[干跑]") == len(steps)
+    assert BEARER not in out, "干跑打印不能把口令印出来"
+    assert "UniqueID 200" in out and "否定词导出" in out
+    assert not home.exists()
+
+    with pytest.raises(InstallerError, match="sudo"):
+        execute(steps, dry_run=False, geteuid=lambda: 501)
+    assert not home.exists() and capsys.readouterr().out == ""
+
+
+# ------------------------------------------------------------------ 体检
+
+
+def _stat(mode: int, uid: int) -> os.stat_result:
+    return os.stat_result((mode, 0, 0, 1, uid, 0, 0, 0, 0, 0))
+
+
+def test_doctor_checks_are_pure_and_name_each_failure_in_chinese() -> None:
+    import stat as st
+
+    failing = [
+        judge_service_user(None),
+        judge_child_cannot_read(None, 501),
+        judge_child_cannot_read(_stat(st.S_IFREG | 0o644, 231), 501),
+        judge_child_cannot_read(_stat(st.S_IFREG | 0o600, 501), 501),
+        judge_export_dir(None, 231, 501),
+        judge_export_dir(_stat(st.S_IFREG | 0o644, 231), 231, 501),
+        judge_export_dir(_stat(st.S_IFDIR | 0o755, 0), 231, 501),
+        judge_export_dir(_stat(st.S_IFDIR | 0o555, 231), 231, 501),
+        judge_export_dir(_stat(st.S_IFDIR | 0o777, 231), 231, 501),
+        judge_export_dir(_stat(st.S_IFDIR | 0o755, 501), None, 501),
+        judge_registration({**registration_json(BEARER), "env": {}}),
+        judge_port("other", 8790),
+        judge_directory({"1000000000000002"}, parse_config(VALID_CONFIG).stores),
+    ]
+    for name, passed, detail in failing:
+        assert passed is False, (name, detail)
+        assert CJK.search(name) and CJK.search(detail), (name, detail)
+    passing = [
+        judge_service_user(231),
+        judge_child_cannot_read(_stat(st.S_IFREG | 0o600, 231), 501),
+        judge_child_cannot_read(_stat(st.S_IFREG | 0o600, 231), None),
+        judge_export_dir(_stat(st.S_IFDIR | 0o755, 231), 231, 501),
+        judge_registration(registration_json(BEARER)),
+        judge_port("free", 8790),
+        judge_port("ours", 8790),
+        judge_directory(
+            {"1000000000000001", "1000000000000002"}, parse_config(VALID_CONFIG).stores
+        ),
+    ]
+    assert all(passed for _, passed, _ in passing), passing
+    assert "日本店" in judge_directory({"1000000000000001"}, parse_config(VALID_CONFIG).stores)[2]
+
+
+def test_doctor_on_a_private_temp_config_passes_and_calls_the_directory_once(
+    private_config: Path,
+) -> None:
+    port = _free_port()
+    checks = doctor(
+        private_config,
+        expect_uid=os.getuid(),
+        child_uid=None,
+        port=port,
+        online=True,
+        client_factory=FakeClient,
+    )
+    assert [(name, passed) for name, passed, _ in checks] == [
+        ("系统用户", True),
+        ("配置文件私有", True),
+        ("配置内容", True),
+        ("孩子读不到密钥", True),
+        ("导出目录", True),
+        ("登记 JSON", True),
+        (f"端口 {port}", True),
+        ("领星名录", True),
+    ]
+    assert len(FakeClient.calls) == 1
+    assert FakeClient.calls[0][1:] == (KEY, "ad_auth_shops", {})
+    assert "美国店、日本店" in checks[2][2] and "20.00 USD" in checks[2][2]
+    assert KEY not in "\n".join(detail for _, _, detail in checks)
+
+
+def test_doctor_reports_a_busy_port_and_a_failed_directory_call(
+    private_config: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    FakeClient.error = LxTransportError("timed out")
+    monkeypatch.setattr(installer, "http_status", lambda url, timeout=5.0: 500)
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as holder:
+        holder.bind(("127.0.0.1", 0))
+        port = int(holder.getsockname()[1])
+        checks = doctor(
+            private_config,
+            expect_uid=os.getuid(),
+            child_uid=None,
+            port=port,
+            online=True,
+            client_factory=FakeClient,
+        )
+        offline = doctor(
+            private_config, expect_uid=os.getuid(), child_uid=None, port=port, online=False
+        )
+    verdicts = {name: (passed, detail) for name, passed, detail in checks}
+    assert verdicts[f"端口 {port}"] == (
+        False,
+        "被别的程序占用（GET /mcp 没得到 401）：换端口或先停掉它",
+    )
+    assert verdicts["领星名录"] == (False, "取数失败（LX_TRANSPORT_ERROR）：timed out")
+    assert [name for name, _, _ in offline][-1] == f"端口 {port}"
+    assert len(FakeClient.calls) == 1, "离线体检一次名录都不查"
+
+
+def test_doctor_on_an_open_config_fails_the_file_checks_and_never_calls_lingxing(
+    private_config: Path,
+) -> None:
+    os.chmod(private_config, 0o644)
+    checks = doctor(
+        private_config,
+        expect_uid=os.getuid(),
+        child_uid=None,
+        port=_free_port(),
+        online=True,
+        client_factory=FakeClient,
+    )
+    verdicts = {name: (passed, detail) for name, passed, detail in checks}
+    assert verdicts["配置文件私有"][0] is False and "0644" in verdicts["配置文件私有"][1]
+    assert verdicts["配置内容"][0] is False
+    assert verdicts["孩子读不到密钥"][0] is False
+    assert verdicts["领星名录"][0] is False and "CONFIG_TOO_OPEN" in verdicts["领星名录"][1]
+    assert FakeClient.calls == [], "密钥文件不私有时，一次网络调用都不发"
+
+
+# ------------------------------------------------------------------ shops
+
+
+def test_shops_renders_a_pasteable_store_table_without_the_key(private_config: Path) -> None:
+    text = shops(private_config, expect_uid=os.getuid(), client_factory=FakeClient)
+    assert FakeClient.calls == [("http://lx.invalid/mcp", KEY, "ad_auth_shops", {})]
+    assert KEY not in text
+    assert "已授权店铺 3 家，另有 2 行缺 profile_id/sid/country、已跳过" in text
+    blocks = text.split("[[stores]]")[1:]
+    assert len(blocks) == 3
+    us_block = "\n".join(
+        (
+            "[[stores]]",
+            'profile_id = "1000000000000001"',
+            'sid = "2000000000000001"',
+            'marketplace = "US"',
+            'currency = "USD"',
+            'nickname = "<给它起个名字>"',
+        )
+    )
+    assert us_block in text
+    assert 'marketplace = "JP"\ncurrency = "JPY"' in text
+    assert 'marketplace = "XX"\ncurrency = ""  # 站点 XX 不在建议表里' in text
+    assert text.count('nickname = "<给它起个名字>"') == 3
+    document = tomllib.loads(text[text.index("[[stores]]") :])  # 段落原样可粘
+    assert [s["profile_id"] for s in document["stores"]] == [
+        "1000000000000001",
+        "1000000000000002",
+        "1000000000000001",
+    ]
+    assert render_shops([]) == "领星没有返回可用的已授权店铺（收到 0 行，跳过 0 行）。"
+    assert render_shops([{"profile_id": 'a"b', "sid": "1", "country": "US"}]).startswith(
+        "领星没有返回可用"
+    )
+
+
+def test_shops_refuses_an_open_config_before_any_network_call(private_config: Path) -> None:
+    os.chmod(private_config, 0o644)
+    with pytest.raises(ConfigError) as caught:
+        shops(private_config, expect_uid=os.getuid(), client_factory=FakeClient)
+    assert caught.value.code == "CONFIG_TOO_OPEN" and FakeClient.calls == []
+
+
+# ------------------------------------------------------------------ 命令行
+
+
+def test_serve_import_is_deferred_and_forwards_the_flags(monkeypatch: pytest.MonkeyPatch) -> None:
+    tree = ast.parse(Path(cli.__file__).read_text(encoding="utf-8"))
+    top_level = {
+        node.module for node in tree.body if isinstance(node, ast.ImportFrom) and node.module
+    }
+    assert "ads_control_plane.sfw.server" not in top_level, (
+        "server 只能在 serve 子命令里延迟 import"
+    )
+
+    calls: list[tuple[Path, int, bool, int | None]] = []
+    stub = types.ModuleType("ads_control_plane.sfw.server")
+
+    def serve(config_path: Path, *, port: int, no_auth: bool, expect_uid: int | None) -> None:
+        calls.append((config_path, port, no_auth, expect_uid))
+
+    stub.serve = serve  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "ads_control_plane.sfw.server", stub)
+    argv = ["serve", "--config", "/x/config.toml", "--port", "9", "--no-auth", "--expect-uid", "7"]
+    assert cli.main(argv) == 0
+    assert calls == [(Path("/x/config.toml"), 9, True, 7)]
+    assert cli.main(["serve"]) == 0
+    assert calls[-1] == (
+        Path("/Library/Application Support/ads-pack/config.toml"),
+        8790,
+        False,
+        os.geteuid(),
+    )
+
+
+def test_install_dry_run_prints_the_plan_and_a_placeholder_secret(
+    assets: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    wheel = tmp_path / "ads_control_plane-0.1.0-py3-none-any.whl"
+    wheel.write_bytes(b"")
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(
+        installer,
+        "inspect_host",
+        lambda *, config_path, query=None: HostState(taken_ids=frozenset(range(200, 205))),
+    )
+    argv = [
+        "install",
+        "--wheel",
+        str(wheel),
+        "--child-user",
+        "kid",
+        "--child-home",
+        str(home),
+        "--uv",
+        "/opt/uv/bin/uv",
+    ]
+    assert cli.main([*argv, "--dry-run"]) == 0
+    out = capsys.readouterr().out
+    assert "不存在，将建（uid 取 205）" in out and "将写模板" in out
+    assert "[干跑]" in out and "UniqueID 205" in out
+    payload = json.loads(next(line for line in out.splitlines() if line.startswith("{")))
+    assert set(payload) == REGISTRATION_KEYS
+    assert payload["secret"] == "<安装后用 sudo ads-pack print-registration 查看>"
+    assert list(home.iterdir()) == []
+
+    monkeypatch.setattr(os, "geteuid", lambda: 501)
+    assert cli.main(argv) == 1
+    assert "sudo" in capsys.readouterr().err
+    assert list(home.iterdir()) == []
+
+
+def test_print_registration_reads_the_bearer_from_the_config(
+    private_config: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(installer, "service_uid", os.getuid)
+    assert cli.main(["print-registration", "--config", str(private_config)]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == registration_json(BEARER)
+    os.chmod(private_config, 0o640)
+    assert cli.main(["print-registration", "--config", str(private_config)]) == 1
+    assert "0640" in capsys.readouterr().err
+
+
+def test_shops_and_doctor_commands_use_the_service_uid_and_exit_codes(
+    private_config: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(installer, "service_uid", os.getuid)
+    monkeypatch.setattr(installer, "LxMcpReadClient", FakeClient)
+    assert cli.main(["shops", "--config", str(private_config)]) == 0
+    out = capsys.readouterr().out
+    assert "[[stores]]" in out and KEY not in out
+
+    port = _free_port()
+    argv = ["doctor", "--config", str(private_config), "--port", str(port), "--offline"]
+    assert cli.main(argv) == 0
+    out = capsys.readouterr().out
+    assert "[失败]" not in out and "7/7 项通过" in out
+    assert len(FakeClient.calls) == 1, "doctor --offline 不查名录"
+
+    os.chmod(private_config, 0o644)
+    assert cli.main(argv) == 1
+    out = capsys.readouterr().out
+    assert "[失败] 配置文件私有" in out and "先修好再 start" in out

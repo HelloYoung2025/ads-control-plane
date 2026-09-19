@@ -58,6 +58,7 @@ SYNTHETIC_IDS = frozenset(
 SCANNED_SUFFIXES = {".py", ".md", ".json", ".js", ".html", ".toml", ".yaml", ".yml", ".example"}
 SKIP_DIRS = {
     ".git",
+    ".claude",  # Claude Code 的 worktree 会建在仓库内；那是别的检出，不归这条守卫扫
     ".venv",
     "__pycache__",
     "node_modules",
@@ -135,7 +136,9 @@ def test_no_real_object_ids_anywhere_in_the_repo() -> None:
     for path in REPO.rglob("*"):
         if not path.is_file() or path.suffix not in SCANNED_SUFFIXES:
             continue
-        if any(part in SKIP_DIRS for part in path.parts):
+        # 只看仓库内的相对路径：仓库自己可能就检出在 .claude/worktrees/ 之下，
+        # 按绝对路径判断会把整个检出都跳过，守卫就成了恒真（2026-09-19 反向验证发现）。
+        if any(part in SKIP_DIRS for part in path.relative_to(REPO).parts):
             continue
         try:
             text = path.read_text(encoding="utf-8")
