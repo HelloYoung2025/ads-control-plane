@@ -3,9 +3,9 @@
 2026-08-28 业务 Owner 裁决（decision register DEC-015 / DEC-111）：
 首批策略 = 高耗零转化词否定；起点 = 阶梯式 L1（AI 生成候选 → 人批准）。
 
-边界（与执行链的关系）：
-- 本模块只产出候选集合、导出行与核验结论，不 import 任何 Provider 适配器；
-  否定词的真实写入在写通道合同冻结（DEC-009 快照）前只允许人工执行（L1.5）。
+边界：
+- 本模块只产出候选集合与导出行，不 import 任何 Provider 适配器；
+  否定词的真实写入由人把 CSV 交给领星完成，本仓库没有写通道。
 - "零转化"（conversions == 0）是规则定义本身，不是参数：把它做成参数会允许
   "低转化也杀"悄悄扩大杀伤面，越过 DEC-015 的白名单裁决。
 """
@@ -17,40 +17,21 @@ import json
 import uuid
 from collections.abc import Callable, Sequence
 from datetime import datetime, timedelta
-from decimal import Decimal
 from enum import StrEnum
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
-from ads_control_plane.authorization.sod import SoDViolation, check_can_approve
 from ads_control_plane.canonical.entity import CanonicalEntityRef, EntityType
 from ads_control_plane.canonical.ids import CanonicalId
 from ads_control_plane.canonical.money import Money
-from ads_control_plane.identity.actor import ActorContext, PrincipalType
-from ads_control_plane.proposals.model import CANONICALIZATION_VERSION
 from ads_control_plane.strategies.rule_class import RuleClass
 
-#: 候选集合从生成到批准的最长时效——候选基于历史窗口，放久了"零转化"可能已不成立。
-CANDIDATE_SET_TTL_HOURS = 72
-
-
-def candidate_set_expired(generated_at: datetime, now: datetime) -> bool:
-    """过没过时效。**唯一**判据，两个 API 面与域层闸共用。
-
-    此前三处各写各的：域层 approve() 是 `now - generated_at > 72h`（开区间），
-    两个 API 面是 `now >= generated_at + 72h`（闭区间）。恰好 72 小时那一刻，
-    界面说「已过期」而服务端其实还收。
-
-    差一瞬看着无所谓，代价却不小：界面为过期集合给的下一步是「拒绝后重新生成」，
-    而默认打法 1 次/日——照做等于赔掉一整天的配额，去换一份服务端本来还肯批的集合。
-    宁可晚一瞬说过期，也不能早一瞬。判据收在这里，第三个面再来也不会各写一套。
-    """
-    return now - generated_at > timedelta(hours=CANDIDATE_SET_TTL_HOURS)
-
-
-#: 核验匹配的操作日志动作名（canonical 词表；真实 Provider 日志由 M2 采集器映射进来）。
-NEGATIVE_CREATE_ACTION = "CREATE_NEGATIVE_EXACT"
+#: Hash 规范化方式版本。变更序列化规则必须提升此版本，旧 Hash 不做跨版本比较。
+#: 2026-09-19 瘦身时搬来就地定义（原定义在同日删除的提案模块里），值逐字不变：compute_hash /
+#: content_fingerprint / NegationParameterPack.content_hash 三处载荷都带着它，
+#: 而 CSV 文件名与报表印的正是 content_fingerprint——值一变，旧文件就对不上新报表。
+CANONICALIZATION_VERSION = "sha256-jsonc1"
 
 
 class NegationParameterPack(BaseModel):
@@ -76,7 +57,7 @@ class NegationParameterPack(BaseModel):
         return self
 
     def content_hash(self) -> str:
-        """参数列表合同 hash：目标授权（mandate）绑定它；参数变更 = 合同重签。"""
+        """参数包合同 hash：参数变更 = 合同重签。"""
         payload = {
             "canonicalization": CANONICALIZATION_VERSION,
             "pack": self.model_dump(mode="json"),
@@ -340,12 +321,10 @@ def generate_negation_candidates(
 class CandidateSetState(StrEnum):
     GENERATED = "GENERATED"
     FROZEN = "FROZEN"
-    APPROVED = "APPROVED"
-    REJECTED = "REJECTED"
 
 
 class NegationCandidateSet(BaseModel):
-    """候选集合：冻结 Hash 绑定审批（与 Proposal 同一套 AX-07 语义）。"""
+    """候选集合：冻结后 set_hash 钉住这一份内容（AX-07：人看见的与人拿去执行的是同一份）。"""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -359,10 +338,6 @@ class NegationCandidateSet(BaseModel):
     source: str  # "AI" | "HUMAN"
     state: CandidateSetState = CandidateSetState.GENERATED
     set_hash: str | None = None
-    approved_by_person_id: str | None = None
-    approved_at: datetime | None = None
-    #: 经目标授权自动生成时记录出处（DEC-114）；人工/即席生成为 None。
-    mandate_id: uuid.UUID | None = None
     #: 本次实际命中多少个候选；超出授权书上限被截断时才不为 None。
     #: 此前这个事实只进 MCP 返回值，签字的人看到的只有截断后的数字——
     #: 卡片写「20 个候选词」，人核对完 20 条就认为「这就是这次找出来的全部浪费」，
@@ -473,47 +448,6 @@ class NegationCandidateSet(BaseModel):
             update={"state": CandidateSetState.FROZEN, "set_hash": self.compute_hash()}
         )
 
-    def approve(
-        self, approver: ActorContext, expected_hash: str, now: datetime
-    ) -> NegationCandidateSet:
-        if self.state is not CandidateSetState.FROZEN:
-            raise CandidateSetError("NOT_FROZEN", f"cannot approve from {self.state}")
-        if self.set_hash is None or expected_hash != self.set_hash:
-            raise CandidateSetError("HASH_MISMATCH", "approval must bind the frozen hash")
-        if self.compute_hash() != self.set_hash:
-            raise CandidateSetError("CONTENT_DRIFT", "content changed after freeze")
-        if candidate_set_expired(self.generated_at, now):
-            raise CandidateSetError(
-                "SET_EXPIRED",
-                f"candidate set older than {CANDIDATE_SET_TTL_HOURS}h; regenerate from fresh data",
-            )
-        # 复用 Proposal 的审批冲突矩阵：AI 永不能批；AI 生成集合的 creator_person 为 None。
-        check_can_approve(approver, self.created_by_person_id, None)
-        return self.model_copy(
-            update={
-                "state": CandidateSetState.APPROVED,
-                "approved_by_person_id": approver.human_person_id,
-                "approved_at": now,
-            }
-        )
-
-    def reject(self, rejector: ActorContext) -> NegationCandidateSet:
-        """否决同样是审批意思表示，只属于人类会话（AX-05）。
-
-        REJECTED 是终态：AI 若能否决，它就能单方面清空人的待办队列，且没有任何
-        一条闸会响。批准侧靠 check_can_approve 挡住了 AI，否决侧原本一道闸都没有——
-        闸装在域层而不是只装在 HTTP 层：将来 MCP 工具面若长出 reject 工具，
-        它会自动继承这条约束，而不是重新裸奔一次。
-
-        与批准不同，这里**不查** CREATOR_CANNOT_*：否决是收缩授权（把待批变成
-        不做），自己否掉自己生成的东西不产生任何利益冲突。
-        """
-        if self.state is not CandidateSetState.FROZEN:
-            raise CandidateSetError("NOT_FROZEN", f"cannot reject from {self.state}")
-        if rejector.principal_type is not PrincipalType.HUMAN:
-            raise SoDViolation("AI_CANNOT_REJECT", "only HUMAN principals may reject")
-        return self.model_copy(update={"state": CandidateSetState.REJECTED})
-
 
 class BulkNegativeRow(BaseModel):
     """人工执行用导出行（L1.5：人经领星后台/Bulk 应用，平台随后经操作日志核验）。"""
@@ -537,8 +471,8 @@ class BulkNegativeRow(BaseModel):
 
 
 def to_bulk_rows(candidate_set: NegationCandidateSet) -> tuple[BulkNegativeRow, ...]:
-    if candidate_set.state is not CandidateSetState.APPROVED:
-        raise CandidateSetError("NOT_APPROVED", "only approved sets may be exported")
+    if candidate_set.state is not CandidateSetState.FROZEN:
+        raise CandidateSetError("NOT_FROZEN", "only frozen sets may be exported")
     rows: list[BulkNegativeRow] = []
     for c in candidate_set.candidates:
         campaign_id = c.scope.parent_refs.campaign_external_id
@@ -564,85 +498,6 @@ def to_bulk_rows(candidate_set: NegationCandidateSet) -> tuple[BulkNegativeRow, 
     # 排序键用外部 ID 不用名称：名称可能为 None，也可能重名，而 ID 恒有且唯一。
     rows.sort(key=lambda r: (r.campaign_external_id, r.ad_group_external_id))
     return tuple(rows)
-
-
-class OperationLogSource(StrEnum):
-    ERP = "ERP"
-    AMAZON = "AMAZON"
-
-
-class OperationLogEntry(BaseModel):
-    """canonical 操作日志条目。真实领星"操作日志（新）"由 M2 采集器映射到此模型。"""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    occurred_at: datetime
-    operator_name: str
-    source: OperationLogSource
-    action: str
-    ad_group_external_id: str
-    search_term: str
-
-
-class VerificationStatus(StrEnum):
-    APPLIED_VERIFIED = "APPLIED_VERIFIED"
-    NOT_FOUND = "NOT_FOUND"
-    #: 多条日志匹配同一候选：无法唯一归因，宁可上报也不猜（对齐回读四分级的诚实边界）。
-    AMBIGUOUS = "AMBIGUOUS"
-
-
-class CandidateVerification(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    candidate_id: CanonicalId
-    status: VerificationStatus
-    matched_operator: str | None = None
-    detail: str = ""
-
-
-def verify_applied(
-    candidate_set: NegationCandidateSet,
-    operation_log: Sequence[OperationLogEntry],
-) -> tuple[CandidateVerification, ...]:
-    """L1.5 核验闭环：批准后的候选是否在操作日志中出现恰一次。"""
-    if candidate_set.state is not CandidateSetState.APPROVED or candidate_set.approved_at is None:
-        raise CandidateSetError("NOT_APPROVED", "verification requires an approved set")
-    approved_at = candidate_set.approved_at
-    results: list[CandidateVerification] = []
-    for c in candidate_set.candidates:
-        matches = [
-            entry
-            for entry in operation_log
-            if entry.action == NEGATIVE_CREATE_ACTION
-            and entry.ad_group_external_id == c.scope.entity_external_id
-            and entry.search_term.casefold() == c.search_term.casefold()
-            and entry.occurred_at >= approved_at
-        ]
-        if not matches:
-            results.append(
-                CandidateVerification(
-                    candidate_id=c.candidate_id,
-                    status=VerificationStatus.NOT_FOUND,
-                    detail="no matching operation-log entry after approval",
-                )
-            )
-        elif len(matches) == 1:
-            results.append(
-                CandidateVerification(
-                    candidate_id=c.candidate_id,
-                    status=VerificationStatus.APPLIED_VERIFIED,
-                    matched_operator=matches[0].operator_name,
-                )
-            )
-        else:
-            results.append(
-                CandidateVerification(
-                    candidate_id=c.candidate_id,
-                    status=VerificationStatus.AMBIGUOUS,
-                    detail=f"{len(matches)} log entries match; cannot attribute uniquely",
-                )
-            )
-    return tuple(results)
 
 
 def render_bulk_csv(
@@ -707,42 +562,3 @@ def render_bulk_csv(
             cells.append(defuse(ad_group_name or ""))
         writer.writerow(cells)
     return buffer.getvalue()
-
-
-class ObjectiveEstimate(BaseModel):
-    """目标函数度量（DEC-113：策略结论以显式目标函数为依据，禁止"优化好了"语义）。
-
-    NEG_EXACT 的目标函数 = 消除的无效花费。估计量 = 已核验落地候选在回看窗口内的
-    花费之和。这是 OBSERVED 估计而非因果结论（被否定词的流量可能转移到其他词），
-    causality 字段固定为 INCONCLUSIVE——因果版本需要 holdout 实验（Gate 4 之后）。
-    """
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    objective: Literal["WASTED_SPEND_REMOVED"] = "WASTED_SPEND_REMOVED"
-    estimated_amount: Money
-    verified_candidate_count: int
-    total_candidate_count: int
-    causality: Literal["INCONCLUSIVE"] = "INCONCLUSIVE"
-
-
-def estimate_waste_removed(
-    candidate_set: NegationCandidateSet,
-    verifications: Sequence[CandidateVerification],
-) -> ObjectiveEstimate:
-    """只统计 APPLIED_VERIFIED 的候选——未核验的候选不计入任何目标函数声明。"""
-    verified_ids = {
-        v.candidate_id for v in verifications if v.status is VerificationStatus.APPLIED_VERIFIED
-    }
-    currency = candidate_set.candidates[0].evidence.spend.currency
-    total = Money(amount=Decimal("0"), currency=currency)
-    count = 0
-    for c in candidate_set.candidates:
-        if c.candidate_id in verified_ids:
-            total = total + c.evidence.spend
-            count += 1
-    return ObjectiveEstimate(
-        estimated_amount=total,
-        verified_candidate_count=count,
-        total_candidate_count=len(candidate_set.candidates),
-    )

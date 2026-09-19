@@ -19,11 +19,8 @@ _ROOT = Path(__file__).resolve().parents[2]
 _IA = _ROOT / "docs/evidence/lx-ads-ia-20260829.md"
 #: 只查会被人读到的地方 + 产生这些话的域层。
 _SPEAKS_TO_HUMANS = (
-    "src/ads_control_plane/api/ui_static/app.js",
-    "src/ads_control_plane/api/ui_static/index.html",
     "src/ads_control_plane/strategies/negation.py",
-    "src/ads_control_plane/api/mcp_tools/server.py",
-    "docs/runbook-local-demo.md",
+    "README.md",
 )
 
 _NAMED_SCREEN = re.compile(r"领星「([^」]{1,20})」")

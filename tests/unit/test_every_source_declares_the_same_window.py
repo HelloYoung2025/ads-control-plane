@@ -27,9 +27,9 @@ from ads_control_plane.canonical.entity import (
 )
 from ads_control_plane.canonical.ids import new_canonical_id
 from ads_control_plane.canonical.money import Money
-from ads_control_plane.providers.mock.search_terms import MockSearchTermSource
 from ads_control_plane.strategies.negation import SearchTermRecord
 from ads_control_plane.strategies.ports import ATTRIBUTION_LAG_DAYS, attribution_window
+from tests.support.mock_search_terms import MockSearchTermSource
 
 AS_OF = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
 
