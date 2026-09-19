@@ -110,7 +110,7 @@ class Step:
     """一个副作用。`content` 在 write 里是文件内容，在 symlink 里是链接指向；
     `owner` 写成 "用户" 或 "用户:组"；chown/chmod 只作用于路径自身，不跟符号链接。
     `keep_existing` 只对 mkdir 有意义：目录已存在时一步不动（孩子自己的 ~/.codex、
-    Homebrew 名下的 /usr/local/bin）；缺省则把已存在的目录也按 owner/mode 校正。"""
+    Homebrew 名下的 /usr/local/bin）；缺省时已存在的目录属主必须已是 owner，否则拒绝。"""
 
     kind: StepKind
     argv: tuple[str, ...] | None = None
@@ -400,8 +400,8 @@ def plan_install(
         )
 
     # ④ 产物目录：属 _adspack，别人只读。上一级也归它——运行记录.csv 写在那里。
-    #    已存在也照样校正：/Users/Shared 是 1777，谁都能先建出 ads-pack/；原样收编的话
-    #    服务写运行记录得 EACCES，而安装输出却印着「_adspack:_adspack」（2026-09-20 复审）。
+    #    /Users/Shared 是 1777，谁都能先建出 ads-pack/：已存在且属主不是 _adspack 就拒绝装
+    #    （里面可能预置了文件），属主对才校正权限——不收编、也不假装校正过（2026-09-20 复审）。
     steps += [
         _mkdir(export_dir.parent, service, 0o755, "运行记录写在这一层"),
         _mkdir(export_dir, service, 0o755, "CSV 与报表落这里；孩子的账号只能读"),
@@ -584,8 +584,14 @@ def _apply_mkdir(parent: int, name: str, step: Step) -> str | None:
             raise InstallerError(f"{step.path} 已存在但不是目录（符号链接？），不动它") from None
         if step.keep_existing:
             return "已存在，不动"
+        expected_uid = ids[0] if ids is not None else 0
+        if st.st_uid != expected_uid:
+            raise InstallerError(
+                f"{step.path} 已存在，属 uid {st.st_uid} 而不是 {step.owner or 'root'}："
+                "不收编别人建的目录（里面可能预置了文件），先 sudo rm -rf 它再装"
+            ) from None
         _set_owner_mode(parent, name, ids, mode)
-        return "已存在，按上面的属主与权限校正"
+        return "已存在，属主对，权限按上面校正"
     _set_owner_mode(parent, name, ids, mode)
     return None
 
@@ -734,6 +740,10 @@ def http_status(url: str, *, timeout: float = 5.0) -> int | None:
 def probe_port(port: int) -> PortState:
     """能 bind 就是空闲；bind 不了就 GET /mcp：401 = 我们的服务（Bearer 生效），其余 = 别的程序。"""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        # 刚停的服务会留下 TIME_WAIT 连接，不设 SO_REUSEADDR 时 bind 会把它当成"被占用"
+        # （2026-09-20 本机实测：停服后 30 秒内 bind 报 EADDRINUSE）。有进程在 LISTEN 时
+        # 设了也照样 bind 失败，判断不受影响。
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             sock.bind(("127.0.0.1", port))
             return "free"

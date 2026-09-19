@@ -21,6 +21,7 @@ from __future__ import annotations
 import hmac
 import logging
 import sys
+import threading
 import tomllib
 from collections.abc import Awaitable, Callable, MutableMapping
 from datetime import UTC, datetime
@@ -173,20 +174,24 @@ def build_server(
     """唯一的工具。ConfigError → ToolError("配置错误：…，找管理员")；其余带码错误逐店进文本。"""
     server: MCPServer[Any] = MCPServer(name=SERVER_NAME, instructions=INSTRUCTIONS)
     sources = _SourceHolder(source_factory if source_factory is not None else build_source)
+    # 同步工具函数由 SDK 放进工作线程跑：两个对话同时敲 /fd 就是两个线程。一把锁让第二个
+    # 等第一个跑完再拿缓存，而不是两边并发打领星（QPS=1）、各建一个数据源。
+    run_lock = threading.Lock()
 
     @server.tool(name=TOOL_NAME, description=TOOL_DESCRIPTION)
     def find_wasted_search_terms() -> str:
-        try:
-            cfg = load_config(config_path, expect_uid=expect_uid)
-        except ConfigError as exc:
-            raise ToolError(f"配置错误：{exc}，找管理员") from exc
-        # 不走 service.run_once：它每次现建数据源，而这里要跨调用复用（取数缓存住在源实例里）。
-        runs = run_all(cfg, sources.for_config(cfg), now=now_fn())
-        logger.info(
-            "find_wasted_search_terms：%s",
-            "，".join(f"{run.store.nickname}={run.outcome.value}" for run in runs),
-        )
-        return summarize(runs, cfg)
+        with run_lock:
+            try:
+                cfg = load_config(config_path, expect_uid=expect_uid)
+            except ConfigError as exc:
+                raise ToolError(f"配置错误：{exc}，找管理员") from exc
+            # 不走 service.run_once：它每次现建数据源，而这里要跨调用复用（取数缓存住在源实例里）。
+            runs = run_all(cfg, sources.for_config(cfg), now=now_fn())
+            logger.info(
+                "find_wasted_search_terms：%s",
+                "，".join(f"{run.store.nickname}={run.outcome.value}" for run in runs),
+            )
+            return summarize(runs, cfg)
 
     return server
 

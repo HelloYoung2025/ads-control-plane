@@ -687,6 +687,40 @@ async def test_the_data_source_is_reused_across_calls_until_the_config_changes(
     assert len(built) == 2, "配置变了就重建"
 
 
+class _SlowSource:
+    """把每次取数拖长一点并记下起止：并发的两次调用会重叠，串行的不会。"""
+
+    def __init__(self, inner: MockSearchTermSource) -> None:
+        self.inner = inner
+        self.spans: list[tuple[float, float]] = []
+
+    def has_profile(self, profile_external_id: str) -> bool:
+        return self.inner.has_profile(profile_external_id)
+
+    def fetch_search_term_performance(self, *args: Any, **kwargs: Any) -> SearchTermFetch:
+        started = time.monotonic()
+        time.sleep(0.05)
+        result = self.inner.fetch_search_term_performance(*args, **kwargs)
+        self.spans.append((started, time.monotonic()))
+        return result
+
+
+async def test_two_calls_at_once_run_one_after_the_other(tmp_path: Path) -> None:
+    slow = _SlowSource(_seeded_mock())
+    path = private(tmp_path, config_text(tmp_path))
+    server = build_server(
+        path, expect_uid=None, now_fn=lambda: NOW, source_factory=lambda cfg: slow
+    )
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(server.call_tool, TOOL_NAME, {})
+        tg.start_soon(server.call_tool, TOOL_NAME, {})
+    spans = sorted(slow.spans)
+    assert len(spans) == 4, "两次调用各取两家店"
+    assert all(
+        a_end <= b_start for (_, a_end), (b_start, _) in zip(spans, spans[1:], strict=False)
+    ), "两个对话同时敲 /fd 也不并发打领星"
+
+
 # ------------------------------------------------------------------ 13. Bearer
 
 

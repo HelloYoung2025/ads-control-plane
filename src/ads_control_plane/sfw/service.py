@@ -364,8 +364,6 @@ def summarize(runs: Sequence[StoreRun], cfg: PackConfig) -> str:
     不设总长上限：每店固定行数线性增长，20 家店也只是 40 行。截断只会把第 5、6 家
     之后的店折掉，而折掉的那些店在回答里连一行都没有。
     """
-    if not runs:
-        return "没有配置任何店铺，找管理员。"
     blocks = []
     for run in runs:
         lines = [_first_line(run)]

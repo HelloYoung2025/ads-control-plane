@@ -25,7 +25,7 @@
 | DEC-118 | **业务场景目标函数三件套**（2026-08-28 Owner 需求：清仓 / 打新品 / 推高销量）：逐一冻结可计算定义与数据依赖——CLEARANCE_VELOCITY（库存 cover_days 源 + 单件亏损上限）、LAUNCH_RAMP（爬坡口径 + 归因成熟期实测）、SALES_GROWTH（单位经济基线 DEC-020/021 + Break-even ACOS）。任一未冻结则该目标签发 fail-closed | 业务+数据 Owner | OPEN |
 | DEC-119 | **多控制器接管边界**（2026-08-28 实测引出）：平台是否采纳"默认只接管无领星策略托管的对象（写前必查 ads_strategy/is_apply_time），接管分时托管实体需 Owner 显式授权基准值同步"为硬原则？V3 补：策略包时段组件连带此裁决二选一——平台自任时段控制器（对象须无分时托管 + 新建钟控运行时 + DEC-115 对钟控写的适用性需一并澄清）vs 委托领星分时（对象变 TOOL_MANAGED，同 bundle 的竞价/预算组件在该对象上被 custody 硬闸拒绝） | 业务+技术 Owner | OPEN |
 | DEC-121 | **人机互斥参数**（2026-08-28 Owner 需求"人操作时 AI 不能操作"）：待定值：HUMAN_PRIORITY 默认冷却时长；平台界面上人改 AI 托管对象是否强制"先接管"仪式。带外人工操作只能滞后检测无法实时阻止——此不对称已如实入文档，Owner 须知悉 | 业务 Owner | OPEN |
-| DEC-122 | **勾选集与审批形态**（2026-08-28 Owner V3 需求"类领星清单勾选布置任务"）：跨层级勾选容器（SelectionSet）如何映射审批——现合同为单层 selector、单 intent、≤200 对象（SELECTOR_TOO_BROAD）、逐集合冻结 Hash（AX-07）；待定：>200 勾选上调上限还是强制拆张；"整包一次批"是否开例外（默认不开，逐集合/逐指令审批）；engagement 是否新增对象集入口字段（focus 保留为文本意图） | 业务 Owner | OPEN |
+| DEC-122 | **勾选集与审批形态**（2026-08-28 Owner V3 需求"类领星清单勾选布置任务"）：跨层级勾选容器（SelectionSet）如何映射审批——2026-08-28 时的合同为单层 selector、单 intent、≤200 对象（SELECTOR_TOO_BROAD）、逐集合冻结 Hash（AX-07）；待定：>200 勾选上调上限还是强制拆张；"整包一次批"是否开例外（默认不开，逐集合/逐指令审批）；engagement 是否新增对象集入口字段（focus 保留为文本意图） | 业务 Owner | OPEN |
 | DEC-123 | **镜像同步节奏与店铺白名单**（V3"下载到本地并同步"）：实测 8 店 7 天 campaign 约 4.0 万行/keyword 约 8.5 万行、QPS=1 → 74 店全量周期同步不可行；待定值：白名单店铺清单、全量/增量周期（建议白名单起步 + 日级全量 + 实测后定增量间隔；快于领星缓存刷新的同步只得重复数据，同 DEC-115 数据物理） | 业务+技术 Owner | OPEN |
 | DEC-124 | **策略包基数**（V3"综合策略"）：StrategyBundle 采用编排层形态——引用 N 张既有授权书 + 共享退出条件 + 原子撤销（推荐：不动 DEC-113 每 rule_class 显式目标函数、DEC-114 一授权书一参数包）？替代形态"单授权书装多参数包"需修订两项已决裁决。bundle 不得发明"包级综合目标函数"替代成员目标 | 业务 Owner | OPEN |
 | DEC-125 | **自动退出语义**（V3"解绑逻辑"）：解绑三型中到期退出已有承载（valid_days≤30 + MANDATE_EXPIRED）；止损/达标退出需新建 ExitGuard（累计结果记账 + 阈值谓词）。待定：触发后 = 暂停回到人（推荐，与"AI 不可撤销授权书"一致）还是自动撤销授权书；止损阈值字段（金额上限/结果下限）入 MandateBounds 还是 bundle 层 | 业务 Owner | OPEN |
@@ -37,7 +37,6 @@
 | DEC-020 | 成本/退款/库存/汇率的权威数据源与 Owner？ | 数据 Owner | OPEN |
 | DEC-021 | 第一阶段主业务目标（按 Campaign）与 Break-even ACOS 正式定义？ | 业务 Owner | OPEN |
 | DEC-022 | 哪些对象同时受 Amazon 规则/领星规则/人工/代理商控制？能否建立单控制器 Canary 窗口？2026-08-28 实测控制器名单：领星 RuleEngine（自动规则）/StepBudget（递增预算）/TimingTactics（分时策略，会按时段覆盖竞价与预算），读侧 ads_strategy 字段可辨托管状态 | 业务+技术 Owner | OPEN |
-| DEC-023 | AI 可否无人值守触发对领星生产 API 的真实取数？2026-08-30 实测：`generate_negation_candidate_set` 是 AI 可调用工具，而 `POST /api/workbench/sync` 要求 HUMAN；即席模式（不带 mandate_id）不受配额/最小间隔/运行时段约束，一次调用是一轮多页读取（14 天窗口实测 2046 行 / 约 20 秒），节流仅靠 1.1s sleep 与 900s 缓存。**权限边界本身由「谁配了 key」决定**，未经裁决 | 业务+安全 Owner | OPEN |
 | DEC-024 | `spends` 是站点本币还是折算后的口径？它直接喂 `min_spend` 门槛，折算过则我们盖的币种章是系统性谎言。2026-08-30 已按站点推币种（MARKETPLACE_CURRENCY），该推断建立在「本币」假设上。验证方式：取一个已知活动，对比领星后台显示花费与网关返回的 `spends`。**首次真实写入前必须完成** | 技术 Owner（后台比对） | OPEN |
 | DEC-025 | commit `42d705c`（2026-08-29）的**提交信息**含真实 Profile ID，违反 SECURITY.md「仓库零 Secret」。2026-08-30 核实：工作树与已跟踪文件内容干净，只有这一条 commit message；该提交仍在 HEAD 历史上，其后 38 个提交；仓库当前**无任何远端**，历史从未离开本机。清除需改写这 38 个提交（破坏性、不可逆），是否执行由 Owner 定 | 安全 Owner | OPEN |
 
@@ -66,3 +65,5 @@
 | DEC-117 | 广告历史数据库确认为 P1 首工单（Owner 需求：保存现在广告的数据用于历史记录）：PostgreSQL append-only 快照（recorded_at/source_as_of 双时间 + raw 留档），采集接通当天即入库；Mock 阶段不建库（无真实数据可存）。CI 用真实 PG（DEC-107）。2026-08-28 补：任务/诊断报告/计划/调整指令同库入表；调整历史由 Control Ledger 承担；向量数据库判定为当前非需求（Owner 所需均为结构化时序查询，PG 即正解），不预建。 | 2026-08-28 |
 | DEC-009 | 快照冲突核实完成（2026-08-28 实测，证据 docs/evidence/lx_mcp_snapshot_20260828T085423Z.json 等）：判定为**能力漂移（网关化改版）**——官方端点现为 help/search/action 三元工具网关，业务目录 basic-open-online-20260825-v3 共 137 工具（116 读/21 写），Amazon 广告写工具 15 个（SP 6 / SB 4 / SD 5）实测在目录（含 negative 投放）；"59 工具直暴"形态已不存在。Owner 亲手提供 key 并指示本会话执行（改写"持有者本人跑"安排） | 2026-08-28 |
 | DEC-120 | 任务层立为一等域对象（2026-08-28 Owner 需求"定义任务太简陋"）：TaskEngagement 生命周期 DRAFT→DIAGNOSED→PLANNED→RUNNING→CLOSED（诊断报告=证据+建议闭集，计划必须引用报告出处，AI 不能批计划）+ AdjustmentDirective 中途介入（selector+intent 白名单→现值/新值预览→Hash 审批；空命中与超宽命中显式报错）。 | 2026-08-28 |
+| DEC-023 | Owner 2026-09-19 授权 Claude 裁决：AI 不无人值守取数——每次领星读取都由人在 SFW 里敲 `/fd` 发起（「请求批准」档下再经弹窗点「批准」）；密钥只在 `_adspack` 的 0600 配置文件里，AI 与孩子 uid 都读不到；同一配置 3600 秒内重复调用走缓存，不再打领星。 | 2026-09-19 |
+| DEC-126 | 业务 Owner 裁决：否定词组件作为 SFW 1.0.8（DMG 为唯一底座）电商 Pack 的只读组件接入；「授权书」语义作废，不设批准入口、配额、调度与休眠内核——否定词只在人把 CSV 交给领星之后生效。DEC-114 的授权书形态随之废止；DEC-121/122/124/125 所议的对象已无承载，去留待 Owner。NEG_EXACT 身份、领星读源准入、调度与时段三项由 Owner 授权 Claude 经多智能体分析裁决（读源见 DEC-023；身份 = 集合内容指纹进文件名与报表，无批准状态；调度 = 无）。 | 2026-09-19 |

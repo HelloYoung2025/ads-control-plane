@@ -9,6 +9,7 @@ tmp_path、root 门用注入的 geteuid 绕过、属主一律映射成本用户�
 from __future__ import annotations
 
 import ast
+import contextlib
 import json
 import os
 import plistlib
@@ -17,6 +18,7 @@ import shutil
 import socket
 import stat
 import sys
+import threading
 import tomllib
 import types
 import uuid
@@ -443,7 +445,8 @@ def test_install_command_plan_never_touches_the_child_home_except_three_paths(
         if step.kind == "run":
             assert not any(str(home) in arg for arg in step.argv or ()), step.argv
     # 家目录之外只有 /usr/local/bin 保留已存在的属主（Intel Mac 上它常归 Homebrew 的管理员）；
-    # 服务目录已存在也按计划校正——/Users/Shared 是 1777，ads-pack/ 可能被任何账号先建出来。
+    # 服务目录不 keep_existing：/Users/Shared 是 1777，ads-pack/ 可能被任何账号先建出来，
+    # 已存在时属主不对就拒绝（见 test_apply_refuses_a_service_dir_someone_else_built）。
     kept = {s.path for s in _plan(assets, tmp_path) if s.kind == "mkdir" and s.keep_existing}
     assert kept == {
         home / "否定词",
@@ -637,16 +640,25 @@ def test_execute_replaces_a_planted_symlink_instead_of_writing_through_it(
     assert (home / ".codex" / "prompts" / "fd.md").is_file(), "停在桌面那一步，前面的都做完了"
 
 
-def test_apply_corrects_an_existing_service_dir_but_keeps_a_child_dir(
-    tmp_path: Path, as_myself: None
+def test_apply_refuses_a_service_dir_someone_else_built(
+    tmp_path: Path, as_myself: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """已存在的目录：服务目录按 Step 校正（安装输出印的属主与权限才是真的）；孩子的目录不动；
-    符号链接一律拒绝。"""
+    """已存在的目录：服务目录属主对才校正权限，属主不对就拒绝（不收编别人预置的文件）；
+    孩子的目录不动；符号链接一律拒绝。"""
     shared = tmp_path / "ads-pack"
     shared.mkdir(mode=0o700)
     service = Step(kind="mkdir", path=shared, owner="_adspack:_adspack", mode=0o755, why="x")
-    assert installer._apply(service) == "已存在，按上面的属主与权限校正"
+    assert installer._apply(service) == "已存在，属主对，权限按上面校正"
     assert stat.S_IMODE(shared.stat().st_mode) == 0o755
+    planted = shared / "运行记录.csv"
+    planted.write_text("x", encoding="utf-8")
+    shared.chmod(0o700)
+    monkeypatch.setattr(installer, "_ids", lambda owner: (os.getuid() + 1, os.getgid()))
+    with pytest.raises(InstallerError, match="不收编别人建的目录"):
+        installer._apply(service)
+    assert stat.S_IMODE(shared.stat().st_mode) == 0o700, "拒绝就一位都不改"
+    assert planted.read_text(encoding="utf-8") == "x"
+    monkeypatch.setattr(installer, "_ids", lambda owner: (os.getuid(), os.getgid()))
     dotcodex = tmp_path / ".codex"
     dotcodex.mkdir(mode=0o700)
     child = Step(kind="mkdir", path=dotcodex, owner="kid", mode=0o755, keep_existing=True, why="x")
@@ -664,6 +676,34 @@ def test_apply_corrects_an_existing_service_dir_but_keeps_a_child_dir(
 
 
 # ------------------------------------------------------------------ 体检
+
+
+def test_probe_port_sees_a_listener_but_not_a_closed_connection_in_time_wait() -> None:
+    """占用判断：有进程在 LISTEN 就是占用；刚关掉的服务留下的 TIME_WAIT 不是占用。"""
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  # uvicorn 也这么设
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(5)
+    listener.settimeout(0.05)
+    port = listener.getsockname()[1]
+    with socket.create_connection(("127.0.0.1", port)):
+        listener.accept()[0].close()  # 服务端先关、没传过数据：TIME_WAIT 留在服务端的端口上
+    stop = threading.Event()
+
+    def drain() -> None:  # 探测的 GET 要有人接、立刻挂断，否则要等 http_status 的 5 秒超时
+        while not stop.is_set():
+            with contextlib.suppress(TimeoutError):
+                listener.accept()[0].close()
+
+    thread = threading.Thread(target=drain)
+    thread.start()
+    try:
+        assert installer.probe_port(port) == "other", "监听中、但不是我们的 401"
+    finally:
+        stop.set()
+        thread.join()
+        listener.close()
+    assert installer.probe_port(port) == "free", "TIME_WAIT 不算占用"
 
 
 def _stat(mode: int, uid: int) -> os.stat_result:
