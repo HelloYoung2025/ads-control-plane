@@ -314,11 +314,16 @@ def render_report_html(run: StoreRun) -> str:
 
 
 def append_run_log(path: Path, run: StoreRun, *, now: datetime) -> None:
-    """追加一行。表头与 UTF-8 BOM 只在新建时写（BOM 给 Excel，同 render_bulk_csv）。"""
+    """追加一行。表头与 UTF-8 BOM 只在新建时写（BOM 给 Excel，同 render_bulk_csv）。
+
+    「时间」列是本机本地时间、带时区偏移（2026-09-19T20:00:00+08:00）：这一列是给管理员
+    对着「刚才在 SFW 里敲的那次」核对用的，人看的是墙上的钟；写 UTC 的话 +08 的管理员会
+    觉得每一行都早了 8 小时、对不上。偏移写在值里，换了机器时区也还原得出同一瞬间。
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     result, frozen = run.result, run.candidate_set
     row = [
-        now.astimezone(UTC).isoformat(),
+        now.astimezone().isoformat(timespec="seconds"),
         run.store.nickname,
         run.outcome.value,
         "" if result is None else str(result.evaluated_count),

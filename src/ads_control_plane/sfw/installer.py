@@ -8,7 +8,10 @@
 隔离模型（计划 §1、§8 攻击 1/2/4 的修法）：组件以系统用户 `_adspack` 常驻，代码、venv、
 config 在 `/Library/Application Support/ads-pack/`，产物在 `/Users/Shared/ads-pack/导出/`。
 孩子 uid 下的进程读 config 得 EACCES、写导出目录得 EACCES——「密钥读不走、文件改不了」
-两条都由文件属主承载，不靠组件内的任何状态；`doctor` 就是把这两条按 stat 结果复核一遍。
+两条都由文件属主承载，不靠组件内的任何状态。代码也不交给服务用户：python/、venv/ 与
+/usr/local/bin/ads-pack 留 root:wheel 0755，`_adspack` 名下只有 config.toml（0600）与
+logs/（0755）——被攻破的 `_adspack` 进程改不了自己下次启动要跑的代码。`doctor` 把这三条
+按 stat 结果复核一遍。
 
 本模块在开发机上从未真跑过（规格 §0 不允许）：`dscl` 建用户序列、`uv python install
 --install-dir` 装进带空格的 `/Library` 路径、LaunchDaemon 以非 root `UserName` 跑 Python，
@@ -62,6 +65,8 @@ LABEL = "local.ads-pack"
 PLIST_PATH = Path("/Library/LaunchDaemons") / f"{LABEL}.plist"
 LOG_PATH = DEFAULT_LOG_DIR / "ads-pack.log"
 BIN_LINK = Path("/usr/local/bin/ads-pack")
+#: launchd 起服务时打开的第一个文件；doctor 拿它当「代码属 root」的哨兵。
+VENV_PYTHON = DEFAULT_ROOT / "venv" / "bin" / "python"
 PYTHON_VERSION = "3.12"
 
 #: SFW 登记 JSON 的键闭集（宿主合同 §3-3）与 name 形状（§3-1）；`tool_timeout_sec` 上限（§3-5）。
@@ -317,10 +322,12 @@ def plan_install(
     # ② 代码与解释器：uv 装一份托管 Python 到 /Library 下，venv 指向它，再装 wheel。
     #    venv 那一步用 UV_PYTHON_INSTALL_DIR 而不是写死解释器路径：托管 Python 的目录名
     #    带完整小版本号（cpython-3.12.x-…），计划期不知道 x 是几。
+    #    这三样以 root 装、留给 root（0755）：_adspack 只需要读和执行，改不了——被攻破的
+    #    服务进程于是改不了自己下次启动要跑的代码。它名下只有 config.toml 与 logs/。
     steps += [
         _mkdir(root, "root:wheel", 0o755, "组件的家：代码、venv、config、日志都在这"),
         _mkdir(python_dir, "root:wheel", 0o755, "uv 托管的 Python 放这里，不碰系统 Python"),
-        _mkdir(log_dir, "root:wheel", 0o755, "LaunchDaemon 的 stdout/stderr 落这里"),
+        _mkdir(log_dir, service, 0o755, "LaunchDaemon 的 stdout/stderr 落这里；服务自己能写"),
         _run(
             (
                 str(uv),
@@ -359,7 +366,6 @@ def plan_install(
             ),
             "把组件 wheel 装进 venv",
         ),
-        Step(kind="chown", path=root, owner=service, why=f"整个目录树交给 {SERVICE_USER}"),
     ]
 
     # ③ config：新装写模板（随机口令、内部身份）；已存在只校正属主与权限，内容一字不动。
@@ -710,6 +716,36 @@ def judge_export_dir(
     return (name, True, f"属 uid {st.st_uid}、{stat.S_IMODE(st.st_mode):04o}：服务能写，孩子只能读")
 
 
+def judge_code_owner(st: os.stat_result | None, path: Path) -> Check:
+    """代码属 root：被攻破的 _adspack 进程改不了自己下次启动要跑的解释器与包。
+
+    只看 venv 里的解释器这一个哨兵：它是 launchd 起服务时打开的第一个文件，
+    属主不对，整棵 python/、venv/ 多半都被交出去了。
+    """
+    name = "代码属 root"
+    if st is None:
+        return (name, False, f"{path} 不存在：先 sudo ads-pack install")
+    if st.st_uid != 0:
+        fix = " ".join(f"'{DEFAULT_ROOT / sub}'" for sub in ("python", "venv"))
+        return (
+            name,
+            False,
+            f"{path} 属 uid {st.st_uid}，不是 root：{SERVICE_USER} 一旦被攻破就能改写自己的代码；"
+            f"要 sudo chown -R root:wheel {fix}",
+        )
+    if st.st_mode & 0o022:
+        return (
+            name,
+            False,
+            f"{path} 权限 {stat.S_IMODE(st.st_mode):04o}：别的账号也能改它，要 chmod 755",
+        )
+    return (
+        name,
+        True,
+        f"{path} 属 root、{stat.S_IMODE(st.st_mode):04o}：{SERVICE_USER} 只能读和执行",
+    )
+
+
 def judge_registration(payload: Mapping[str, object]) -> Check:
     problems = registration_problems(payload)
     if problems:
@@ -790,6 +826,7 @@ def doctor(
     checks.append(judge_child_cannot_read(_stat_or_none(config_path), child_uid))
     export_dir = cfg.export_dir if cfg is not None else DEFAULT_EXPORT_DIR
     checks.append(judge_export_dir(_stat_or_none(export_dir), expect_uid, child_uid))
+    checks.append(judge_code_owner(_stat_or_none(VENV_PYTHON), VENV_PYTHON))
     if cfg is not None:
         checks.append(judge_registration(registration_json(cfg.sfw_bearer, port=port)))
     checks.append(judge_port(probe_port(port), port))

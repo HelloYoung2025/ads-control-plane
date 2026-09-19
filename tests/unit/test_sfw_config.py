@@ -279,7 +279,15 @@ def test_nickname_that_cannot_live_in_a_link_or_a_filename_is_refused(nickname: 
     _refused(VALID.replace('nickname = "美国店"', f'nickname = "{nickname}"'), "NICKNAME_INVALID")
 
 
-@pytest.mark.parametrize("nickname", ["美国店", "US-1", "店铺_2", "店" * 20, "ＵＳ"])
+@pytest.mark.parametrize("nickname", ["-美国店", "-", "--", "-1"])
+def test_nickname_starting_with_a_hyphen_is_refused(nickname: str) -> None:
+    """以 - 开头的昵称：运行记录.csv 里那一格会被 Excel 当公式，文件名会被 shell 当选项。
+    连字符只准出现在后面（US-1、店-）。"""
+    text = VALID.replace('nickname = "美国店"', f'nickname = "{nickname}"')
+    assert "连字符开头" in str(_refused(text, "NICKNAME_INVALID"))
+
+
+@pytest.mark.parametrize("nickname", ["美国店", "US-1", "店-", "店铺_2", "店" * 20, "ＵＳ"])
 def test_nickname_regex_accepts_words_in_any_script_without_spaces(nickname: str) -> None:
     assert NICKNAME_RE.fullmatch(nickname)
     cfg = parse_config(VALID.replace('nickname = "美国店"', f'nickname = "{nickname}"'))
@@ -519,7 +527,7 @@ def test_frozen_interface_constants() -> None:
     assert Path("/Users/Shared/ads-pack/运行记录.csv") == DEFAULT_RUN_LOG
     assert DEFAULT_PORT == 8790
     assert SERVICE_USER == "_adspack"
-    assert NICKNAME_RE.pattern == r"^[\w一-鿿-]{1,20}$"
+    assert NICKNAME_RE.pattern == r"^[\w一-鿿][\w一-鿿-]{0,19}$"
 
 
 def test_marketplace_currency_table_is_iso_codes_keyed_by_site() -> None:

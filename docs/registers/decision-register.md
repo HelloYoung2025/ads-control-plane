@@ -22,9 +22,9 @@
 | DEC-013 | **Gate 1 凭据方案**（评审 P0 SEC-01）：低权限子账号 MCP key 或接口级授权剥离写 + 写拒绝测试证明；不可行则凭据托管自 Gate 1 起按 Executor 级标准。Gate 1 退出条件由"无生产 Write Credential"改写为"凭据写能力已被证实性禁用并通过写拒绝测试" | 安全 Owner | OPEN |
 | DEC-014 | **采用率门槛值**（评审 P1 LP-04）：Gate 3 进入的治理占比阈值与 L1.5 闭环率指标取值（L1.5 台阶本身已由 DEC-111 确认） | 业务 Owner | OPEN |
 | DEC-016 | 向领星正式核实：企业多 AppId、接口级授权(2001004)能否剥离写接口、SB/SD 写是否在规划、操作日志保留期 | 技术 Owner | OPEN |
-| DEC-118 | **业务场景目标函数三件套**（2026-08-28 Owner 需求：清仓 / 打新品 / 推高销量）：逐一冻结可计算定义与数据依赖——CLEARANCE_VELOCITY（库存 cover_days 源 + 单件亏损上限）、LAUNCH_RAMP（爬坡口径 + 归因成熟期实测）、SALES_GROWTH（单位经济基线 DEC-020/021 + Break-even ACOS）。任一未冻结则该目标签发 fail-closed（代码已强制 OBJECTIVE_NOT_READY） | 业务+数据 Owner | OPEN |
+| DEC-118 | **业务场景目标函数三件套**（2026-08-28 Owner 需求：清仓 / 打新品 / 推高销量）：逐一冻结可计算定义与数据依赖——CLEARANCE_VELOCITY（库存 cover_days 源 + 单件亏损上限）、LAUNCH_RAMP（爬坡口径 + 归因成熟期实测）、SALES_GROWTH（单位经济基线 DEC-020/021 + Break-even ACOS）。任一未冻结则该目标签发 fail-closed | 业务+数据 Owner | OPEN |
 | DEC-119 | **多控制器接管边界**（2026-08-28 实测引出）：平台是否采纳"默认只接管无领星策略托管的对象（写前必查 ads_strategy/is_apply_time），接管分时托管实体需 Owner 显式授权基准值同步"为硬原则？V3 补：策略包时段组件连带此裁决二选一——平台自任时段控制器（对象须无分时托管 + 新建钟控运行时 + DEC-115 对钟控写的适用性需一并澄清）vs 委托领星分时（对象变 TOOL_MANAGED，同 bundle 的竞价/预算组件在该对象上被 custody 硬闸拒绝） | 业务+技术 Owner | OPEN |
-| DEC-121 | **人机互斥参数**（2026-08-28 Owner 需求"人操作时 AI 不能操作"）：机制已实施（ObjectCustody 四层控制权 + 带外人工变更检测让位），待定值：HUMAN_PRIORITY 默认冷却时长（现 72h）；平台界面上人改 AI 托管对象是否强制"先接管"仪式。带外人工操作只能滞后检测无法实时阻止——此不对称已如实入文档，Owner 须知悉 | 业务 Owner | OPEN |
+| DEC-121 | **人机互斥参数**（2026-08-28 Owner 需求"人操作时 AI 不能操作"）：待定值：HUMAN_PRIORITY 默认冷却时长；平台界面上人改 AI 托管对象是否强制"先接管"仪式。带外人工操作只能滞后检测无法实时阻止——此不对称已如实入文档，Owner 须知悉 | 业务 Owner | OPEN |
 | DEC-122 | **勾选集与审批形态**（2026-08-28 Owner V3 需求"类领星清单勾选布置任务"）：跨层级勾选容器（SelectionSet）如何映射审批——现合同为单层 selector、单 intent、≤200 对象（SELECTOR_TOO_BROAD）、逐集合冻结 Hash（AX-07）；待定：>200 勾选上调上限还是强制拆张；"整包一次批"是否开例外（默认不开，逐集合/逐指令审批）；engagement 是否新增对象集入口字段（focus 保留为文本意图） | 业务 Owner | OPEN |
 | DEC-123 | **镜像同步节奏与店铺白名单**（V3"下载到本地并同步"）：实测 8 店 7 天 campaign 约 4.0 万行/keyword 约 8.5 万行、QPS=1 → 74 店全量周期同步不可行；待定值：白名单店铺清单、全量/增量周期（建议白名单起步 + 日级全量 + 实测后定增量间隔；快于领星缓存刷新的同步只得重复数据，同 DEC-115 数据物理） | 业务+技术 Owner | OPEN |
 | DEC-124 | **策略包基数**（V3"综合策略"）：StrategyBundle 采用编排层形态——引用 N 张既有授权书 + 共享退出条件 + 原子撤销（推荐：不动 DEC-113 每 rule_class 显式目标函数、DEC-114 一授权书一参数包）？替代形态"单授权书装多参数包"需修订两项已决裁决。bundle 不得发明"包级综合目标函数"替代成员目标 | 业务 Owner | OPEN |
@@ -54,15 +54,15 @@
 | DEC-106 | MVP 回测 = 决策重放（触发正确性/ABSTAIN/振荡），结果栏强制 INCONCLUSIVE；结果型回测在 bid→CPC 映射经 Canary 实测校验后解锁。 | 2026-08-28 |
 | DEC-107 | 禁止 SQLite/内存库作触库测试替身（RLS/SKIP LOCKED/SET LOCAL 为 PG 专有语义）；CI 使用真实 PostgreSQL；纯业务逻辑以不触库纯函数编写。 | 2026-08-28 |
 | DEC-108 | 执行器物理拆为 uv workspace 独立包（依赖单向 executor→core，CI 断言）。 | 2026-08-28 |
-| DEC-109 | 限流类"证明未执行"拒绝走有界重投通道（不杀 Intent），本地桶感知节流置于单提交 CAS 之前；安全不变量精确化为"可能已生效的提交 ≤ 1"；已实施并有测试。 | 2026-08-28 |
+| DEC-109 | 限流类"证明未执行"拒绝走有界重投通道（不杀 Intent），本地桶感知节流置于单提交 CAS 之前；安全不变量精确化为"可能已生效的提交 ≤ 1"。 | 2026-08-28 |
 | DEC-110 | 完整 WORM 副本 defer 至 Gate 4 准入前；首期 = append-only 异地导出 + 完整性 Hash；Control Ledger 同步预写不可妥协。 | 2026-08-28 |
 | DEC-111 | 业务 Owner 裁决：自动化起点 = 阶梯式（AI 提案 → 人批准 → 指标达标后逐级解锁自动），确认 L1/L1.5 台阶；终态目标为有界自动。 | 2026-08-28 |
 | DEC-015 | 业务 Owner 裁决：单个 Negative Exact 选定为首批策略（原问题"是否列为白名单候选"以更强形式关闭）。 | 2026-08-28 |
-| DEC-112 | 首批策略实现形态 = NEG_EXACT 候选纵切（证据门 conversions==0 不可参数化 + 参数包白名单 + 集合冻结 Hash 审批 + Bulk 行导出 + 操作日志核验），零 Provider 写；已实施并有测试（`strategies/`）。 | 2026-08-28 |
-| DEC-113 | 业务 Owner 裁决：策略结论禁止无目标函数的"优化好了"语义——每个 rule_class 必须绑定显式目标函数与估计量。NEG_EXACT 目标函数 = WASTED_SPEND_REMOVED（估计量 = 已核验候选的窗口花费之和，causality 恒标 INCONCLUSIVE，因果版本待 holdout）；已实施（`estimate_waste_removed`）。 | 2026-08-28 |
+| DEC-112 | 首批策略实现形态 = NEG_EXACT 候选纵切（证据门 conversions==0 不可参数化 + 参数包白名单 + 集合冻结 Hash 审批 + Bulk 行导出 + 操作日志核验），零 Provider 写。 | 2026-08-28 |
+| DEC-113 | 业务 Owner 裁决：策略结论禁止无目标函数的"优化好了"语义——每个 rule_class 必须绑定显式目标函数与估计量。NEG_EXACT 目标函数 = WASTED_SPEND_REMOVED（估计量 = 已核验候选的窗口花费之和，causality 恒标 INCONCLUSIVE，因果版本待 holdout）。 | 2026-08-28 |
 | DEC-114 | 业务 Owner 裁决："批准"演进为目标授权（填写目标 → 形成参数列表 → 系统对着参数列表运行）。实现为 AutomationMandate：目标函数 + 参数包合同（自包含，授权模式下拒绝调用方参数覆盖）+ 配额（日运行数/单次候选数/有效期 ≤30 天）+ 人签发、单人可撤销、AI 不可签不可撤。当前消费点 = 候选自动生成；执行侧自动化字段待 Gate 3 授权后以重签方式扩展。 | 2026-08-28 |
-| DEC-115 | 调整频次入授权书合同（Owner 需求）：`run_interval_minutes` 白名单 [60, 10080]，间隔未到运行即拒（RUN_TOO_SOON）。"10 分钟一次"被白名单排除——理由是数据物理：搜索词报告日级、领星读为 Amazon 缓存（滞后分钟~天级），快于数据刷新的运行读到同一份缓存、只产生重复决策；否词类建议 1440。已实施并有测试。 | 2026-08-28 |
-| DEC-116 | 业务目标场景入白名单枚举（清仓/打新品/推高销量 + 降无效花费）：每个目标绑定数据就绪条件，未就绪签发即拒并列出缺项（OBJECTIVE_NOT_READY，缺项定义见 DEC-118）。已实施（`ObjectiveKind` + `OBJECTIVE_DATA_REQUIREMENTS`）。 | 2026-08-28 |
+| DEC-115 | 调整频次入授权书合同（Owner 需求）：`run_interval_minutes` 白名单 [60, 10080]，间隔未到运行即拒（RUN_TOO_SOON）。"10 分钟一次"被白名单排除——理由是数据物理：搜索词报告日级、领星读为 Amazon 缓存（滞后分钟~天级），快于数据刷新的运行读到同一份缓存、只产生重复决策；否词类建议 1440。 | 2026-08-28 |
+| DEC-116 | 业务目标场景入白名单枚举（清仓/打新品/推高销量 + 降无效花费）：每个目标绑定数据就绪条件，未就绪签发即拒并列出缺项（OBJECTIVE_NOT_READY，缺项定义见 DEC-118）。 | 2026-08-28 |
 | DEC-117 | 广告历史数据库确认为 P1 首工单（Owner 需求：保存现在广告的数据用于历史记录）：PostgreSQL append-only 快照（recorded_at/source_as_of 双时间 + raw 留档），采集接通当天即入库；Mock 阶段不建库（无真实数据可存）。CI 用真实 PG（DEC-107）。2026-08-28 补：任务/诊断报告/计划/调整指令同库入表；调整历史由 Control Ledger 承担；向量数据库判定为当前非需求（Owner 所需均为结构化时序查询，PG 即正解），不预建。 | 2026-08-28 |
 | DEC-009 | 快照冲突核实完成（2026-08-28 实测，证据 docs/evidence/lx_mcp_snapshot_20260828T085423Z.json 等）：判定为**能力漂移（网关化改版）**——官方端点现为 help/search/action 三元工具网关，业务目录 basic-open-online-20260825-v3 共 137 工具（116 读/21 写），Amazon 广告写工具 15 个（SP 6 / SB 4 / SD 5）实测在目录（含 negative 投放）；"59 工具直暴"形态已不存在。Owner 亲手提供 key 并指示本会话执行（改写"持有者本人跑"安排） | 2026-08-28 |
-| DEC-120 | 任务层立为一等域对象（2026-08-28 Owner 需求"定义任务太简陋"）：TaskEngagement 生命周期 DRAFT→DIAGNOSED→PLANNED→RUNNING→CLOSED（诊断报告=证据+建议闭集，计划必须引用报告出处，AI 不能批计划）+ AdjustmentDirective 中途介入（selector+intent 白名单→现值/新值预览→Hash 审批；空命中与超宽命中显式报错）。内核已实施（`tasks/`，19 测试）；诊断生成器待 P1 真实读通道。 | 2026-08-28 |
+| DEC-120 | 任务层立为一等域对象（2026-08-28 Owner 需求"定义任务太简陋"）：TaskEngagement 生命周期 DRAFT→DIAGNOSED→PLANNED→RUNNING→CLOSED（诊断报告=证据+建议闭集，计划必须引用报告出处，AI 不能批计划）+ AdjustmentDirective 中途介入（selector+intent 白名单→现值/新值预览→Hash 审批；空命中与超宽命中显式报错）。 | 2026-08-28 |

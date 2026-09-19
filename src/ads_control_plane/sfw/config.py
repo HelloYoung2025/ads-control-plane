@@ -44,8 +44,9 @@ DEFAULT_PORT = 8790
 SERVICE_USER = "_adspack"
 DEFAULT_TIME_BUDGET_SECONDS = 3300
 
-#: 店铺昵称会进文件名与 Markdown 链接 `[名字](/路径)`，所以不含空格、不含路径分隔符。
-NICKNAME_RE = re.compile(r"^[\w一-鿿-]{1,20}$")
+#: 店铺昵称会进文件名与 Markdown 链接 `[名字](/路径)`，所以不含空格、不含路径分隔符；
+#: 首字符不能是「-」：运行记录.csv 里以 - 开头的格会被 Excel 当公式，文件名会被 shell 当选项。
+NICKNAME_RE = re.compile(r"^[\w一-鿿][\w一-鿿-]{0,19}$")
 
 #: SFW → 组件的口令：安装时随机生成的十六进制串，至少 32 位。
 _BEARER_RE = re.compile(r"^[0-9A-Fa-f]{32,}$")
@@ -302,7 +303,8 @@ def _parse_stores(raw_stores: list[_RawStore], thresholds: Thresholds) -> tuple[
             raise ConfigError(
                 "NICKNAME_INVALID",
                 f"第 {index} 个 [[stores]] 的昵称 {raw.nickname!r} 不合规："
-                "只能用中文、字母、数字、下划线、连字符，1 到 20 个字，不能有空格",
+                "只能用中文、字母、数字、下划线、连字符，1 到 20 个字，不能有空格，"
+                "不能以连字符开头",
             )
         if raw.profile_id in seen_profiles:
             raise ConfigError(
@@ -458,7 +460,7 @@ key = ""
 
 # 店铺表：每家店一段，五项都要填（sudo ads-pack shops 会打印可粘贴的段落）。
 # nickname 是给人看的名字，会进文件名：中文、字母、数字、下划线、连字符，
-# 不超过 20 个字，不能有空格。
+# 不超过 20 个字，不能有空格，不能以连字符开头。
 # currency 要在下面 [thresholds.min_spend] 里有一档门槛。
 # [[stores]]
 # profile_id = "1000000000000001"

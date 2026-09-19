@@ -12,7 +12,9 @@ import csv
 import io
 import json
 import logging
+import os
 import re
+import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, MutableMapping
 from contextlib import asynccontextmanager
@@ -285,12 +287,36 @@ def test_run_writes_csv_html_and_log_into_the_export_dir(tmp_path: Path) -> None
     assert rows[0] == list(RUN_LOG_HEADER)
     assert [r[1:3] for r in rows[1:]] == [["美国店", "CANDIDATES"], ["日本店", "CANDIDATES"]]
     us = rows[1]
-    assert us[0] == NOW.isoformat()
+    # 「时间」是本地时间带偏移：解析回来是同一瞬间，偏移与本机一致，不带微秒。
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}", us[0]), us[0]
+    assert datetime.fromisoformat(us[0]) == NOW
+    assert datetime.fromisoformat(us[0]).utcoffset() == NOW.astimezone().utcoffset()
     assert us[3:8] == ["2", "2", "2", "0", "0"]
     assert runs[0].candidate_set is not None
     assert us[8] == runs[0].candidate_set.content_fingerprint()
     assert us[9] == runs[0].candidate_set.set_hash
     assert runs[0].csv_path is not None and us[10] == runs[0].csv_path.name
+
+
+def test_run_log_time_is_the_local_wall_clock_with_its_offset(tmp_path: Path) -> None:
+    """运行记录的「时间」给管理员对着墙上的钟核对「刚才那次」；写 UTC 的话 +08 的人会觉得
+    每行都早了 8 小时。偏移写在值里，换了时区也还原得出同一瞬间。这里把本机时区钉成东京，
+    断言才与跑测试的机器无关。"""
+    cfg = parse_config(config_text(tmp_path, [US]))
+    before = os.environ.get("TZ")
+    os.environ["TZ"] = "Asia/Tokyo"
+    time.tzset()
+    try:
+        run_all(cfg, MockSearchTermSource(), now=NOW)
+    finally:
+        if before is None:
+            del os.environ["TZ"]
+        else:
+            os.environ["TZ"] = before
+        time.tzset()
+    stamp = _run_log_rows(cfg.run_log_path)[1][0]
+    assert stamp == "2026-09-19T21:00:00+09:00"
+    assert datetime.fromisoformat(stamp) == NOW
 
 
 # ------------------------------------------------------------------ 3. 每店一条链接

@@ -41,6 +41,7 @@ from ads_control_plane.sfw.installer import (
     doctor,
     execute,
     judge_child_cannot_read,
+    judge_code_owner,
     judge_directory,
     judge_export_dir,
     judge_port,
@@ -132,6 +133,14 @@ def assets(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     (directory / "fd.md").write_text("测试桩：那一句话\n", encoding="utf-8")
     monkeypatch.setattr(installer, "ASSETS", directory)
     return directory
+
+
+@pytest.fixture
+def root_owned_code(monkeypatch: pytest.MonkeyPatch) -> Path:
+    """「代码属 root」要 stat 真实的 venv/bin/python；开发机上没有，拿 /bin/sh 顶——
+    它在 macOS 与 Linux 上都属 root、0755，正是那一项要看到的样子。"""
+    monkeypatch.setattr(installer, "VENV_PYTHON", Path("/bin/sh"))
+    return Path("/bin/sh")
 
 
 @pytest.fixture
@@ -316,7 +325,7 @@ def test_install_plan_covers_the_eight_admin_steps(assets: Path, tmp_path: Path)
     ) in dscl
     assert ("/usr/bin/dscl", ".", "-create", "/Users/_adspack", "IsHidden", "1") in dscl
 
-    # ② 目录、托管 Python、venv、wheel、chown -R。
+    # ② 目录、托管 Python、venv、wheel；代码留给 root，没有 chown -R。
     uv = str(tmp_path / "bin" / "uv")
     python_dir = str(DEFAULT_ROOT / "python")
     assert (uv, "--no-config", "python", "install", "--install-dir", python_dir, "3.12") in argvs
@@ -341,12 +350,20 @@ def test_install_plan_covers_the_eight_admin_steps(assets: Path, tmp_path: Path)
         str(DEFAULT_ROOT / "venv/bin/python"),
         wheel,
     ) in argvs
-    [chown] = [s for s in steps if s.kind == "chown"]
-    assert (chown.path, chown.owner) == (DEFAULT_ROOT, "_adspack:_adspack")
-    assert steps.index(chown) > max(steps.index(s) for s in steps if s.kind == "run")
-    for sub in ("", "python", "logs"):
+    # 代码不交给服务用户：没有 chown 步，根目录与 python/ 留 root:wheel；_adspack 名下只有
+    # config.toml、logs/ 与产物目录。被攻破的 _adspack 进程于是改不了自己下次启动要跑的代码。
+    assert not [s for s in steps if s.kind == "chown"]
+    owners = {"": "root:wheel", "python": "root:wheel", "logs": "_adspack:_adspack"}
+    for sub, owner in owners.items():
         [made] = [s for s in _by_path(steps, DEFAULT_ROOT / sub) if s.kind == "mkdir"]
-        assert made.kind == "mkdir" and made.mode == 0o755
+        assert (made.owner, made.mode) == (owner, 0o755), sub
+    handed_over = {s.path for s in steps if s.owner and s.owner.startswith(SERVICE_USER)}
+    assert handed_over == {
+        DEFAULT_ROOT / "config.toml",
+        DEFAULT_ROOT / "logs",
+        DEFAULT_EXPORT_DIR,
+        DEFAULT_EXPORT_DIR.parent,
+    }
 
     # ③ config 模板：属 _adspack、0600、内容 = render_config_template。
     [config] = _by_path(steps, DEFAULT_ROOT / "config.toml")
@@ -414,6 +431,9 @@ def test_install_plan_keeps_an_existing_config_and_user(assets: Path, tmp_path: 
     assert not [s for s in steps if s.kind == "run" and s.argv and s.argv[0] == "/usr/bin/dscl"]
     config_steps = _by_path(steps, DEFAULT_ROOT / "config.toml")
     assert [s.kind for s in config_steps] == ["chown", "chmod"]
+    assert [s.path for s in steps if s.kind == "chown"] == [DEFAULT_ROOT / "config.toml"], (
+        "重装也只校正 config.toml 的属主，代码树不交给服务用户"
+    )
     assert config_steps[0].owner == "_adspack:_adspack" and config_steps[1].mode == 0o600
     assert not any(s.kind == "write" and s.content and BEARER in s.content for s in steps)
 
@@ -537,6 +557,9 @@ def test_doctor_checks_are_pure_and_name_each_failure_in_chinese() -> None:
         judge_export_dir(_stat(st.S_IFDIR | 0o555, 231), 231, 501),
         judge_export_dir(_stat(st.S_IFDIR | 0o777, 231), 231, 501),
         judge_export_dir(_stat(st.S_IFDIR | 0o755, 501), None, 501),
+        judge_code_owner(None, Path("/x/venv/bin/python")),
+        judge_code_owner(_stat(st.S_IFREG | 0o755, 231), Path("/x/venv/bin/python")),
+        judge_code_owner(_stat(st.S_IFREG | 0o777, 0), Path("/x/venv/bin/python")),
         judge_registration({**registration_json(BEARER), "env": {}}),
         judge_port("other", 8790),
         judge_directory({"1000000000000002"}, parse_config(VALID_CONFIG).stores),
@@ -549,6 +572,7 @@ def test_doctor_checks_are_pure_and_name_each_failure_in_chinese() -> None:
         judge_child_cannot_read(_stat(st.S_IFREG | 0o600, 231), 501),
         judge_child_cannot_read(_stat(st.S_IFREG | 0o600, 231), None),
         judge_export_dir(_stat(st.S_IFDIR | 0o755, 231), 231, 501),
+        judge_code_owner(_stat(st.S_IFREG | 0o755, 0), Path("/x/venv/bin/python")),
         judge_registration(registration_json(BEARER)),
         judge_port("free", 8790),
         judge_port("ours", 8790),
@@ -558,10 +582,12 @@ def test_doctor_checks_are_pure_and_name_each_failure_in_chinese() -> None:
     ]
     assert all(passed for _, passed, _ in passing), passing
     assert "日本店" in judge_directory({"1000000000000001"}, parse_config(VALID_CONFIG).stores)[2]
+    not_roots = judge_code_owner(_stat(st.S_IFREG | 0o755, 231), Path("/x/venv/bin/python"))[2]
+    assert "uid 231" in not_roots and "chown -R root:wheel" in not_roots
 
 
 def test_doctor_on_a_private_temp_config_passes_and_calls_the_directory_once(
-    private_config: Path,
+    private_config: Path, root_owned_code: Path
 ) -> None:
     port = _free_port()
     checks = doctor(
@@ -578,6 +604,7 @@ def test_doctor_on_a_private_temp_config_passes_and_calls_the_directory_once(
         ("配置内容", True),
         ("孩子读不到密钥", True),
         ("导出目录", True),
+        ("代码属 root", True),
         ("登记 JSON", True),
         (f"端口 {port}", True),
         ("领星名录", True),
@@ -615,6 +642,18 @@ def test_doctor_reports_a_busy_port_and_a_failed_directory_call(
     assert verdicts["领星名录"] == (False, "取数失败（LX_TRANSPORT_ERROR）：timed out")
     assert [name for name, _, _ in offline][-1] == f"端口 {port}"
     assert len(FakeClient.calls) == 1, "离线体检一次名录都不查"
+
+
+def test_doctor_fails_when_the_interpreter_it_would_launch_is_missing(
+    private_config: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(installer, "VENV_PYTHON", tmp_path / "venv" / "bin" / "python")
+    checks = doctor(
+        private_config, expect_uid=os.getuid(), child_uid=None, port=_free_port(), online=False
+    )
+    verdicts = {name: (passed, detail) for name, passed, detail in checks}
+    passed, detail = verdicts["代码属 root"]
+    assert passed is False and "不存在" in detail and str(tmp_path) in detail
 
 
 def test_doctor_on_an_open_config_fails_the_file_checks_and_never_calls_lingxing(
@@ -766,7 +805,10 @@ def test_print_registration_reads_the_bearer_from_the_config(
 
 
 def test_shops_and_doctor_commands_use_the_service_uid_and_exit_codes(
-    private_config: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    private_config: Path,
+    root_owned_code: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     monkeypatch.setattr(installer, "service_uid", os.getuid)
     monkeypatch.setattr(installer, "LxMcpReadClient", FakeClient)
@@ -778,7 +820,7 @@ def test_shops_and_doctor_commands_use_the_service_uid_and_exit_codes(
     argv = ["doctor", "--config", str(private_config), "--port", str(port), "--offline"]
     assert cli.main(argv) == 0
     out = capsys.readouterr().out
-    assert "[失败]" not in out and "7/7 项通过" in out
+    assert "[失败]" not in out and "8/8 项通过" in out
     assert len(FakeClient.calls) == 1, "doctor --offline 不查名录"
 
     os.chmod(private_config, 0o644)

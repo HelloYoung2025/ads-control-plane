@@ -35,8 +35,7 @@ _UV_CANDIDATES = (Path("/opt/homebrew/bin/uv"), Path("/usr/local/bin/uv"))
 
 def _serve(args: argparse.Namespace) -> int:
     # 延迟 import：uvicorn 与 MCP 服务端只有这条路需要；install/doctor 不该为它付启动成本。
-    # server.py 由 WP-2 提供；它合入前这条 import 解析不到，ignore 让两种状态下 mypy 都能过。
-    from ads_control_plane.sfw.server import serve  # type: ignore[import-untyped,unused-ignore]
+    from ads_control_plane.sfw.server import serve
 
     serve(Path(args.config), port=args.port, no_auth=args.no_auth, expect_uid=args.expect_uid)
     return 0
