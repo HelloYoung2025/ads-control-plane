@@ -120,7 +120,7 @@ class SearchTermRecord(BaseModel):
         # 时区检查必须在最前面：下面的 window_end <= window_start 与策略里的
         # now - data_as_of 都要拿这些时刻做比较/减法，naive 混进来先炸的是裸
         # TypeError，穿透 MCP 面后只剩一句 Error executing tool，拒绝的理由丢失。
-        # mirror/snapshot.py、run_window.py、mandate.py 都有这道闸，策略输入曾是唯一缺口。
+        # 当年镜像与授权书模块（已删）都有这道闸，策略输入曾是唯一缺口（2026-08-30 补上）。
         for label in ("window_start", "window_end", "data_as_of"):
             moment: datetime = getattr(self, label)
             if moment.tzinfo is None or moment.tzinfo.utcoffset(moment) is None:
@@ -147,8 +147,8 @@ class CandidateEvidence(BaseModel):
     spend: Money
     clicks: int
     conversions: int
-    #: 进 compute_hash 是对的：审批人在证据表里看到的就是这个数，AX-07 要求
-    #: 被批准的内容与被看见的内容是同一份。
+    #: 进 compute_hash 是对的：人在报表里看到的就是这个数，AX-07 要求
+    #: 交给领星的内容与被看见的内容是同一份。
     impressions: int | None = None
     window_start: datetime
     window_end: datetime
@@ -164,8 +164,8 @@ class NegationCandidate(BaseModel):
     search_term: str
     match_type: Literal["NEGATIVE_EXACT"] = "NEGATIVE_EXACT"
     evidence: CandidateEvidence
-    #: 人看的名字，随证据一起冻结（因此也进 set_hash）。进 hash 是对的：审批人
-    #: 看到的就是这两个名字，AX-07 要求被批准的内容与被看见的内容是同一份。
+    #: 人看的名字，随证据一起冻结（因此也进 set_hash）。进 hash 是对的：人在报表里
+    #: 看到的就是这两个名字，AX-07 要求交给领星的内容与被看见的内容是同一份。
     #: 名字在冻结集合里不可变，所以不会引起 CONTENT_DRIFT。
     campaign_name: str | None = None
     ad_group_name: str | None = None
@@ -338,12 +338,10 @@ class NegationCandidateSet(BaseModel):
     source: str  # "AI" | "HUMAN"
     state: CandidateSetState = CandidateSetState.GENERATED
     set_hash: str | None = None
-    #: 本次实际命中多少个候选；超出授权书上限被截断时才不为 None。
-    #: 此前这个事实只进 MCP 返回值，签字的人看到的只有截断后的数字——
-    #: 卡片写「20 个候选词」，人核对完 20 条就认为「这就是这次找出来的全部浪费」，
-    #: 而实际命中 137 个、117 个被静默丢弃，当天配额又不允许再跑。
-    #: 签发表单自己承诺过「运行结果会告诉你截断前有多少个」（index.html:274），
-    #: 而那个人往往就是审批屏幕前的这个人。
+    #: 本次实际命中多少个候选；超出每轮上限被截断时才不为 None。
+    #: 这个事实必须跟着集合走：人看到「20 个候选词」、核对完 20 条就会认为
+    #: 「这就是这次找出来的全部浪费」，而实际命中 137 个、117 个被静默丢弃
+    #: （2026-09 之前它只进 MCP 返回值，看清单的人从来看不到）。
     truncated_from: int | None = None
     #: 同一轮里"钱在烧、但本策略否不掉"的词有几个（ASIN 型搜索词）。
     #: 和 truncated_from 是同一个病的两个入口：这个事实此前只进 MCP 返回值，而
@@ -351,11 +349,9 @@ class NegationCandidateSet(BaseModel):
     #: 不进 compute_hash——它不是被批准的内容，是被批准内容的**边界说明**，
     #: 与 truncated_from 同一条理由。
     asin_abstain_count: int = 0
-    #: 那几个 ASIN 到底是哪几个。计数没有词就等于「知道有钱在烧，但说不出烧在哪」——
-    #: 卡片此前把人指去「向 AI 要那次运行的 abstains」，而这条路走不通：词表不进
-    #: 任何存储，list_negation_candidate_sets 只回计数，按同一份授权书重跑当天必撞
-    #: RUN_BUDGET_EXCEEDED（产出这份集合的那次运行已经把配额用掉了）。人在签完字
-    #: 正要去领星的那一刻，知道该去哪个页签、唯独拿不到要否定的那个词。
+    #: 那几个 ASIN 到底是哪几个。计数没有词就等于「知道有钱在烧，但说不出烧在哪」：
+    #: 人正要去领星的那一刻，知道该去哪个页签、唯独拿不到要否定的那个词
+    #: （2026-09 之前词表不进任何存储，只能这样丢失）。
     #: 与 asin_abstain_count 同理由不进 compute_hash：边界说明，不是被批准的内容。
     asin_abstain_terms: tuple[str, ...] = ()
 
@@ -380,12 +376,12 @@ class NegationCandidateSet(BaseModel):
 
     @property
     def profile_external_id(self) -> str | None:
-        """这批候选归属的店铺。候选的 scope 里现成就有，此前只有 REST 面私有一份。
+        """这批候选归属的店铺。候选的 scope 里现成就有。
 
-        两家店各有一份待批集合时，两张卡片除 uuid 前 8 位外一切可比信息相同——
-        候选数、生成时间、来源、广告组名（同一条产品线在两家店常常就是同名广告组）。
-        人挑一份批准、下载 CSV，文件里没有一列告诉他该打开哪家店的后台。
-        跨店时返回 None：说不出唯一一家，就不许挑一家说。
+        两家店各有一份集合时，除 uuid 外一切可比信息都可能相同——候选数、生成时间、
+        广告组名（同一条产品线在两家店常常就是同名广告组）；文件里若没有一列说明
+        该打开哪家店的后台，人就会加错店。跨店时返回 None：说不出唯一一家，
+        就不许挑一家说。
         """
         profiles = {c.scope.profile_external_id for c in self.candidates}
         return profiles.pop() if len(profiles) == 1 else None
@@ -394,13 +390,13 @@ class NegationCandidateSet(BaseModel):
         """同一批词、同一批证据的两次生成得到同一个值——set_hash 不会。
 
         set_hash 绑定的是**这一份**冻结集合，每条候选的编号进 hash，于是内容逐字
-        相同的两次生成必得两个不同的 hash。这对审批防篡改是对的，但它让「这两份
-        待批是不是同一批发现」在界面上无从回答：两张卡片并排、指纹不同、词数相同，
+        相同的两次生成必得两个不同的 hash。这对防篡改是对的，但它让「这两份
+        是不是同一批发现」无从回答：两份报表并排、hash 不同、词数相同，
         读起来就是两批不同的发现，而人不会去逐词比对。2026-08-30 在真实通道上实测：
         连续两次即席生成（第二次全部命中缓存，输入逐行相同）产出两份 7 条候选的
         FROZEN 集合，set_hash 完全不同。
 
-        本值只回答「是不是同一批」，不参与审批绑定——两者故意分开：一个必须随
+        本值只回答「是不是同一批」，不参与 set_hash 绑定——两者故意分开：一个必须随
         每次冻结而变，一个必须不变。
 
         `evidence.data_as_of` 同样要剔除（2026-08-30 排查）。它记的是**取数时刻**，
@@ -419,7 +415,7 @@ class NegationCandidateSet(BaseModel):
         同步镜像、再生成一次：第一次镜像里还没有名字（解析为 null），第二次有了。
         对象身份不在名字里而在 scope（entity_external_id + parent_refs），它仍在指纹中，
         所以剔名字不会把两批不同对象的候选混成一批。
-        名字仍然进 set_hash：审批绑定的是**人看见的那一份**（AX-07），那里必须含名字。
+        名字仍然进 set_hash：set_hash 绑定的是**人看见的那一份**（AX-07），那里必须含名字。
         这两个 hash 回答的是两个不同的问题，这正是它们分开存在的理由。
         """
         items: list[dict[str, Any]] = []
@@ -450,15 +446,14 @@ class NegationCandidateSet(BaseModel):
 
 
 class BulkNegativeRow(BaseModel):
-    """人工执行用导出行（L1.5：人经领星后台/Bulk 应用，平台随后经操作日志核验）。"""
+    """人工执行用导出行：人拿着 CSV 在领星后台逐条加否定词；组件不核验、不记录那一步。"""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     #: 这行要加到哪家店。AX-06 要求写入定位靠「精确对象 + 完整父链」，而这张表
     #: 正是真正交到人手上去执行的那份东西——父链此前在店铺这一层就断了。
-    #: 两家店各有一份待批集合时，导出的两个文件除文件名里的 uuid 外无从分辨，
-    #: 而同一条产品线在两家店常常就是同名广告组。加错店后 verify_applied 只会回
-    #: NOT_FOUND，不会说明原因。
+    #: 两家店的导出文件若只靠文件名区分就无从分辨，而同一条产品线在两家店常常
+    #: 就是同名广告组。加错店时没有任何东西会报错。
     profile_external_id: str
     shop_external_id: str
     campaign_external_id: str
@@ -505,7 +500,7 @@ def render_bulk_csv(
     *,
     name_of: Callable[[str, str], str | None] | None = None,
 ) -> str:
-    """L1.5 人工执行用 CSV（UTF-8 带 BOM，含表头）。列名即 canonical 字段名，不做本地化。
+    """人工执行用 CSV（UTF-8 带 BOM，含表头）。列名即 canonical 字段名，不做本地化。
 
     name_of("campaign"|"ad_group", external_id) 可选：提供时在 ID 列之后追加
     campaign_name / ad_group_name 两列（镜像现值解析；缺名留空，不编造）。
@@ -553,9 +548,9 @@ def render_bulk_csv(
             row.match_type,
         ]
         if name_of is not None:
-            # 先用候选自带的名字（与这批指标出自同一行、随冻结集合一起被批准），
-            # 没有才回落到镜像解析。反过来会让镜像里那个**另一时点**的名字盖掉
-            # 审批人实际看过的那个。
+            # 先用候选自带的名字（与这批指标出自同一行、随冻结集合一起被人看见），
+            # 没有才回落到 name_of 解析。反过来会让**另一时点**的名字盖掉
+            # 人在报表里实际看过的那个。
             campaign_name = row.campaign_name or name_of("campaign", row.campaign_external_id)
             ad_group_name = row.ad_group_name or name_of("ad_group", row.ad_group_external_id)
             cells.append(defuse(campaign_name or ""))
