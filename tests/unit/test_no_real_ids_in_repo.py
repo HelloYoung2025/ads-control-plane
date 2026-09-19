@@ -90,27 +90,32 @@ def _offenders_in_text(path: Path, text: str) -> list[str]:
     return found
 
 
-def _declares_sanitized(text: str) -> bool:
-    """文件是否自报「已脱敏」。
+def _emitted_ids(text: str) -> frozenset[str] | None:
+    """脱敏文件自带的 ID 白名单：`sanitized.ids_emitted` 里那些值，别的一律算泄露。
 
-    合成 ID 刻意保留了真实 ID 的形状（同长度、同前导零、同 JSON 类型），因为
-    「超长与前导零 ID 无损」那条合同测试需要这种形状才测得出东西——所以守卫凭形状
-    分辨不出合成与真实，只能靠这个声明。
+    合成 ID 刻意保留了真实 ID 的形状（同长度、同前导零、同 JSON 类型），守卫凭形状
+    分辨不出合成与真实。此前的办法是「文件自报 sanitized 就整份跳过」——那是一张
+    自己给自己开的免检单：2026-09-20 查出 lx-response 证据文件的 targeting_mark[]
+    嵌套块从未被脱敏，真实 Profile ID、真实投放词在仓库里躺了三周，守卫全程绿灯。
+    改为：脱敏脚本把自己**吐出**的每个 ID 列进 ids_emitted，扫描只放行这张单子上的值。
+    漏掉的那一处留着的是原值，不在单子上，于是红。
     """
     try:
         document = json.loads(text)
     except ValueError:
-        return False
-    return isinstance(document, dict) and isinstance(document.get("sanitized"), dict)
+        return None
+    block = document.get("sanitized") if isinstance(document, dict) else None
+    if not isinstance(block, dict):
+        return None
+    listed = block.get("ids_emitted")
+    return frozenset(str(v) for v in listed) if isinstance(listed, list) else frozenset()
 
 
-def _offenders_in_json(path: Path, text: str) -> list[str]:
+def _offenders_in_json(path: Path, text: str, allowed: frozenset[str]) -> list[str]:
     """JSON 另走一遍结构化扫描：嵌套值不一定长成 "field": "value" 的字面形状。"""
     try:
         document = json.loads(text)
     except ValueError:
-        return []
-    if isinstance(document, dict) and isinstance(document.get("sanitized"), dict):
         return []
     found: list[str] = []
 
@@ -119,7 +124,11 @@ def _offenders_in_json(path: Path, text: str) -> list[str]:
             for key, value in node.items():
                 if key in ID_FIELDS:
                     for item in value if isinstance(value, list) else [value]:
-                        if isinstance(item, str | int) and _is_suspect(str(item)):
+                        if (
+                            isinstance(item, str | int)
+                            and _is_suspect(str(item))
+                            and str(item) not in allowed
+                        ):
                             found.append(f"{path.relative_to(REPO)}: {key}={item!r}")
                 walk(value)
         elif isinstance(node, list):
@@ -143,16 +152,39 @@ def test_no_real_object_ids_anywhere_in_the_repo() -> None:
             text = path.read_text(encoding="utf-8")
         except (UnicodeDecodeError, OSError):
             continue
+        allowed = _emitted_ids(text) if path.suffix == ".json" else None
         if path.suffix == ".json":
-            offenders.extend(_offenders_in_json(path, text))
-            if _declares_sanitized(text):
-                continue  # 文本扫描也一并跳过，理由见 _offenders_in_json
-        offenders.extend(_offenders_in_text(path, text))
+            offenders.extend(_offenders_in_json(path, text, allowed or frozenset()))
+        offenders.extend(
+            line
+            for line in _offenders_in_text(path, text)
+            if allowed is None or line.rsplit("=", 1)[-1].strip("'\"") not in allowed
+        )
     assert offenders == [], (
         "疑似真实店铺/Profile/对象 ID 进入仓库（SECURITY.md 密钥政策）：\n"
         + "\n".join(sorted(set(offenders)))
         + "\n\n若确为手工编造，请加入本文件的 SYNTHETIC_IDS 并说明来源。"
     )
+
+
+def test_a_sanitized_file_only_gets_a_pass_for_the_ids_it_listed(tmp_path: Path) -> None:
+    """自报脱敏不再是免检单：单子上没有的 ID 照样算泄露（2026-09-20 的漏网就是这一类）。"""
+    listed = "4" + "111222333444555"
+    missed = "3" + "999888777666555"
+    document = {
+        "sanitized": {"ids": "shape-preserving hash", "ids_emitted": [listed]},
+        "rows": [{"profile_id": listed, "targeting_mark": [{"profile_id": missed}]}],
+    }
+    path = tmp_path / "evidence.json"
+    text = json.dumps(document, ensure_ascii=False)
+    path.write_text(text, encoding="utf-8")
+    allowed = _emitted_ids(text)
+    assert allowed == frozenset({listed})
+    offenders = _offenders_in_json(REPO / "docs" / "x.json", text, allowed)
+    assert [o for o in offenders if missed in o], "嵌套里没列进单子的 ID 必须被抓住"
+    assert not [o for o in offenders if listed in o], "单子上的值是脚本自己吐的，放行"
+    assert _emitted_ids('{"sanitized": {}}') == frozenset(), "没有单子就等于一个都不放行"
+    assert _emitted_ids('{"rows": []}') is None, "没声明脱敏的文件不走白名单这条路"
 
 
 def test_guard_actually_catches_a_realistic_id() -> None:
