@@ -5,7 +5,8 @@
 调用。把闸门读成排程的人会一直等，待批永远空着，他会把这读成「这个店很干净」
 或者「这系统坏了」。那套界面与授权书 2026-09-19 已整个删掉，这道守卫留下事实这一侧：
 
-1. `src/` 里 generate_negation_candidates 只有定义它的那一处，没有第二个调用点；
+1. `src/` 里 generate_negation_candidates 只有定义它的那一处与 sfw/service.py 里那一个
+   调用点——它只在 SFW 里的人敲 /fd、模型调一次工具时才跑；没有第三处；
 2. 没有调度器依赖，也没有定时器/后台任务。
 
 事实若变了（比如长出一个「每天自己跑」的入口），README 与模型面文字里
@@ -22,7 +23,7 @@ def test_nothing_in_the_repo_runs_the_strategy_on_a_schedule() -> None:
 
     只认**调用形**（带左括号），不认注释里提到函数名的那几处——把「谁调用了它」
     和「谁在讨论它」分开，才不至于因为有人写了一句注释就变红。def 行同样带左括号，
-    所以定义它的那个文件恒在集合里。
+    所以定义它的那个文件恒在集合里；sfw/service.py 是唯一的调用点（人敲 /fd 那一次）。
     """
     callers = sorted(
         p.relative_to(_ROOT).as_posix()
@@ -30,6 +31,7 @@ def test_nothing_in_the_repo_runs_the_strategy_on_a_schedule() -> None:
         if "generate_negation_candidates(" in p.read_text(encoding="utf-8")
     )
     assert callers == [
+        "src/ads_control_plane/sfw/service.py",
         "src/ads_control_plane/strategies/negation.py",
     ], f"多出了调用点：{callers}——若是新增了排程，「不会自己运行」就成了假话"
     pyproject = (_ROOT / "pyproject.toml").read_text(encoding="utf-8").lower()

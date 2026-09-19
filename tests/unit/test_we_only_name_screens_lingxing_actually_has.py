@@ -20,6 +20,10 @@ _IA = _ROOT / "docs/evidence/lx-ads-ia-20260829.md"
 #: 只查会被人读到的地方 + 产生这些话的域层。
 _SPEAKS_TO_HUMANS = (
     "src/ads_control_plane/strategies/negation.py",
+    "src/ads_control_plane/sfw/service.py",
+    "src/ads_control_plane/sfw/report.py",
+    "src/ads_control_plane/sfw/server.py",
+    "src/ads_control_plane/sfw/assets/AGENTS.md",
     "README.md",
 )
 

@@ -1,46 +1,30 @@
-"""Mock 搜索词数据源：SearchTermReadPort 的 Development/CI 唯一实现。"""
+"""Mock 搜索词数据源：SearchTermReadPort 的测试实现（CI 唯一的数据源）。"""
 
 from __future__ import annotations
 
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from ads_control_plane.strategies.negation import SearchTermRecord
 from ads_control_plane.strategies.ports import SearchTermFetch, attribution_window
 
 
 class MockSearchTermSource:
-    """seed 进来什么就返回什么——除了窗口（每次现算）与可选的「跟着时钟一起变旧」。
+    """seed 进来什么就返回什么——除了窗口（每次按端口的公共算法现算）。
 
-    ages_with_clock 只给**常驻演示服务**用（local_demo 的组合根）。种子在进程启动
-    那一刻打的 data_as_of 是固定的，而默认参数包 max_data_staleness_hours=24：
-    服务开满 22 小时之后，同一批种子从「3 个候选」变成「数据太旧，全部弃权」，
-    而界面给出的下一步是「等新数据」——演示里永远不会有新数据，那句话等不到头
-    （2026-09-07 排查）。开着这个开关，每条记录**保持它相对种子时刻的新旧**：
-    2 小时前的永远是 2 小时前，故意做旧的 48 小时前的永远是 48 小时前——
-    STALE_DATA 那条演示路径原样成立，不是把闸拆了。
-
-    默认关闭：测试要的是「seed 进去多旧就是多旧」，那才测得动新鲜度闸本身。
+    测试要的是「seed 进去多旧就是多旧」，那才测得动新鲜度闸本身。此前还有一个
+    「跟着时钟一起变旧」的开关，只给常驻演示服务用；那个服务 2026-09-19 整个删掉了，
+    开关随之删除。
     """
 
-    def __init__(self, *, ages_with_clock: bool = False) -> None:
+    def __init__(self) -> None:
         self._lock = threading.Lock()
         self._records: dict[str, list[SearchTermRecord]] = {}
-        self._seeded_at: dict[str, datetime] = {}
-        self._ages_with_clock = ages_with_clock
         self.read_call_count = 0
 
-    def seed(
-        self,
-        profile_external_id: str,
-        records: list[SearchTermRecord],
-        *,
-        seeded_at: datetime | None = None,
-    ) -> None:
+    def seed(self, profile_external_id: str, records: list[SearchTermRecord]) -> None:
         with self._lock:
             self._records[profile_external_id] = list(records)
-            if seeded_at is not None:
-                self._seeded_at[profile_external_id] = seeded_at
 
     def fetch_search_term_performance(
         self,
@@ -56,20 +40,8 @@ class MockSearchTermSource:
         window_start, window_end = attribution_window(lookback_days=lookback_days, as_of=as_of)
         with self._lock:
             self.read_call_count += 1
-            seeded_at = self._seeded_at.get(profile_external_id)
-            shift = (
-                as_of - seeded_at
-                if self._ages_with_clock and seeded_at is not None
-                else timedelta(0)
-            )
             records = tuple(
-                r.model_copy(
-                    update={
-                        "window_start": window_start,
-                        "window_end": window_end,
-                        "data_as_of": r.data_as_of + shift,
-                    }
-                )
+                r.model_copy(update={"window_start": window_start, "window_end": window_end})
                 for r in self._records.get(profile_external_id, [])
             )
             # 丢弃类计数全为 0：seed 进来的记录没有「读不出来」这回事。这不是省事——
