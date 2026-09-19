@@ -1,7 +1,9 @@
-"""安装器测试：只测计划与渲染，绝不执行。
+"""安装器测试：计划与渲染只看纯函数；执行层只在临时目录里、以本用户身份真跑。
 
 这里没有一处会调 dscl/launchctl/sysadminctl，也不会写 /Library、/Users/Shared 或任何家目录
-（规格 §0 第 1 条）。`execute` 只在 dry_run 与「不是 root 就拒绝」两条路上被碰到。
+（规格 §0 第 1 条）。`execute` 真跑的只有计划里落在「孩子家目录」的那几步——家目录换成
+tmp_path、root 门用注入的 geteuid 绕过、属主一律映射成本用户；它要钉的是路径处理
+（2026-09-20 复审：跟着孩子预置的符号链接走），不是 chown 本身。
 """
 
 from __future__ import annotations
@@ -13,6 +15,7 @@ import plistlib
 import re
 import shutil
 import socket
+import stat
 import sys
 import tomllib
 import types
@@ -144,6 +147,12 @@ def root_owned_code(monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 @pytest.fixture
+def as_myself(monkeypatch: pytest.MonkeyPatch) -> None:
+    """真执行时把所有属主都映射成本用户：非 root 只能 chown 给自己。"""
+    monkeypatch.setattr(installer, "_ids", lambda owner: (os.getuid(), os.getgid()))
+
+
+@pytest.fixture
 def private_config(tmp_path: Path) -> Path:
     """0600 的合法配置；导出目录指向临时目录（真目录在 /Users/Shared，测试不碰）。"""
     export_dir = tmp_path / "导出"
@@ -167,6 +176,14 @@ def _plan(assets: Path, tmp_path: Path, **overrides: object) -> tuple[Step, ...]
     }
     kwargs.update(overrides)
     return plan_install(**kwargs)  # type: ignore[arg-type]
+
+
+def _child_home_steps(assets: Path, tmp_path: Path) -> tuple[Step, ...]:
+    """计划里落在孩子家目录（tmp_path/home/kid）的那几步：三个 mkdir、两个 write、一个 symlink。"""
+    home = tmp_path / "home" / "kid"
+    return tuple(
+        s for s in _plan(assets, tmp_path) if s.path is not None and s.path.is_relative_to(home)
+    )
 
 
 def _free_port() -> int:
@@ -421,9 +438,19 @@ def test_install_command_plan_never_touches_the_child_home_except_three_paths(
             continue
         assert step.kind == "mkdir", f"{step.path} 不是那三样，也不是它们的父目录"
         assert any(step.path in target.parents for target in allowed), step.path
+        assert step.keep_existing, f"{step.path} 是孩子家里的目录，已存在就不能改属主与权限"
     for step in _plan(assets, tmp_path):
         if step.kind == "run":
             assert not any(str(home) in arg for arg in step.argv or ()), step.argv
+    # 家目录之外只有 /usr/local/bin 保留已存在的属主（Intel Mac 上它常归 Homebrew 的管理员）；
+    # 服务目录已存在也按计划校正——/Users/Shared 是 1777，ads-pack/ 可能被任何账号先建出来。
+    kept = {s.path for s in _plan(assets, tmp_path) if s.kind == "mkdir" and s.keep_existing}
+    assert kept == {
+        home / "否定词",
+        home / ".codex",
+        home / ".codex" / "prompts",
+        Path("/usr/local/bin"),
+    }
 
 
 def test_install_plan_keeps_an_existing_config_and_user(assets: Path, tmp_path: Path) -> None:
@@ -536,6 +563,106 @@ def test_execute_dry_run_prints_without_touching_and_real_run_needs_root(
     assert not home.exists() and capsys.readouterr().out == ""
 
 
+def test_execute_lays_out_the_child_home_and_leaves_an_existing_dotcodex_alone(
+    assets: Path, tmp_path: Path, as_myself: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    home = tmp_path / "home" / "kid"
+    (home / "Desktop").mkdir(parents=True)
+    (home / ".codex").mkdir(mode=0o700)
+    steps = _child_home_steps(assets, tmp_path)
+    assert [s.kind for s in steps] == ["mkdir", "write", "mkdir", "mkdir", "write", "symlink"]
+    execute(steps, dry_run=False, geteuid=lambda: 0)
+    out = capsys.readouterr().out
+    agents, prompt, link = (
+        home / "否定词" / "AGENTS.md",
+        home / ".codex/prompts/fd.md",
+        (home / "Desktop" / "否定词导出"),
+    )
+    assert agents.read_text(encoding="utf-8") == "测试桩：给模型的纪律\n"
+    assert prompt.read_text(encoding="utf-8") == "测试桩：那一句话\n"
+    assert os.readlink(link) == str(DEFAULT_EXPORT_DIR)
+    assert stat.S_IMODE((home / "否定词").stat().st_mode) == 0o755
+    assert stat.S_IMODE(agents.stat().st_mode) == 0o644
+    assert stat.S_IMODE((home / ".codex").stat().st_mode) == 0o700, "孩子自己的 ~/.codex 不能被放开"
+    assert out.count("已存在，不动") == 1
+    assert not [p for p in home.rglob("*") if p.name.endswith(".tmp")], "临时文件不能留下"
+    # 再跑一遍：目录都在了、链接已指向目标、文件重写成同样内容——不报错、不留东西。
+    execute(steps, dry_run=False, geteuid=lambda: 0)
+    assert capsys.readouterr().out.count("已存在，不动") == 3
+    assert os.readlink(link) == str(DEFAULT_EXPORT_DIR)
+    assert sorted(p.name for p in (home / "否定词").iterdir()) == ["AGENTS.md"]
+
+
+def test_execute_refuses_a_project_dir_the_child_turned_into_a_symlink(
+    assets: Path, tmp_path: Path, as_myself: None
+) -> None:
+    """2026-09-20 复审复现的路径：孩子把 ~/否定词 换成指向自己另一个目录的链接，并在那里
+    预置 AGENTS.md.tmp → 受害文件；旧实现 is_dir() 跟着链接早退，再以 root O_TRUNC 打开
+    可预测的临时名，就把受害文件截断了。"""
+    home = tmp_path / "home" / "kid"
+    victim = tmp_path / "victim"
+    victim.write_text("原样\n", encoding="utf-8")
+    elsewhere = home / "atk"
+    elsewhere.mkdir(parents=True)
+    (elsewhere / "AGENTS.md.tmp").symlink_to(victim)
+    (home / "否定词").symlink_to(elsewhere)
+    with pytest.raises(InstallerError, match="符号链接"):
+        execute(_child_home_steps(assets, tmp_path), dry_run=False, geteuid=lambda: 0)
+    assert victim.read_text(encoding="utf-8") == "原样\n"
+    assert sorted(p.name for p in elsewhere.iterdir()) == ["AGENTS.md.tmp"], "链接那头什么都不能多"
+    assert (home / "否定词").is_symlink() and not (home / ".codex").exists(), "第一步就停"
+
+
+def test_execute_replaces_a_planted_symlink_instead_of_writing_through_it(
+    assets: Path, tmp_path: Path, as_myself: None
+) -> None:
+    home = tmp_path / "home" / "kid"
+    victim = tmp_path / "victim"
+    victim.write_text("原样\n", encoding="utf-8")
+    project = home / "否定词"
+    project.mkdir(parents=True)
+    (project / "AGENTS.md").symlink_to(victim)  # 目标本身是链接：换掉链接，不写穿它
+    (project / "AGENTS.md.tmp").symlink_to(victim)  # 旧实现可预测的临时名
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (home / "Desktop").symlink_to(elsewhere)  # 桌面整个换成链接：上级目录是链接就停
+    with pytest.raises(InstallerError, match="上级目录"):
+        execute(_child_home_steps(assets, tmp_path), dry_run=False, geteuid=lambda: 0)
+    assert victim.read_text(encoding="utf-8") == "原样\n"
+    agents = project / "AGENTS.md"
+    assert not agents.is_symlink()
+    assert agents.read_text(encoding="utf-8") == "测试桩：给模型的纪律\n"
+    assert (project / "AGENTS.md.tmp").is_symlink(), "预置的临时名没被碰"
+    assert list(elsewhere.iterdir()) == [], "桌面链接没有落到链接那头"
+    assert (home / ".codex" / "prompts" / "fd.md").is_file(), "停在桌面那一步，前面的都做完了"
+
+
+def test_apply_corrects_an_existing_service_dir_but_keeps_a_child_dir(
+    tmp_path: Path, as_myself: None
+) -> None:
+    """已存在的目录：服务目录按 Step 校正（安装输出印的属主与权限才是真的）；孩子的目录不动；
+    符号链接一律拒绝。"""
+    shared = tmp_path / "ads-pack"
+    shared.mkdir(mode=0o700)
+    service = Step(kind="mkdir", path=shared, owner="_adspack:_adspack", mode=0o755, why="x")
+    assert installer._apply(service) == "已存在，按上面的属主与权限校正"
+    assert stat.S_IMODE(shared.stat().st_mode) == 0o755
+    dotcodex = tmp_path / ".codex"
+    dotcodex.mkdir(mode=0o700)
+    child = Step(kind="mkdir", path=dotcodex, owner="kid", mode=0o755, keep_existing=True, why="x")
+    assert installer._apply(child) == "已存在，不动"
+    assert stat.S_IMODE(dotcodex.stat().st_mode) == 0o700
+    link = tmp_path / "link"
+    link.symlink_to(tmp_path / "elsewhere")
+    with pytest.raises(InstallerError, match="不是目录"):
+        installer._apply(
+            Step(kind="mkdir", path=link, owner="_adspack:_adspack", mode=0o755, why="x")
+        )
+    assert not (tmp_path / "elsewhere").exists()
+    with pytest.raises(InstallerError, match="绝对路径"):
+        installer._apply(Step(kind="mkdir", path=Path("relative/dir"), why="x"))
+
+
 # ------------------------------------------------------------------ 体检
 
 
@@ -557,6 +684,7 @@ def test_doctor_checks_are_pure_and_name_each_failure_in_chinese() -> None:
         judge_export_dir(_stat(st.S_IFDIR | 0o555, 231), 231, 501),
         judge_export_dir(_stat(st.S_IFDIR | 0o777, 231), 231, 501),
         judge_export_dir(_stat(st.S_IFDIR | 0o755, 501), None, 501),
+        judge_export_dir(None, 231, 501, name="运行记录目录"),
         judge_code_owner(None, Path("/x/venv/bin/python")),
         judge_code_owner(_stat(st.S_IFREG | 0o755, 231), Path("/x/venv/bin/python")),
         judge_code_owner(_stat(st.S_IFREG | 0o777, 0), Path("/x/venv/bin/python")),
@@ -582,6 +710,8 @@ def test_doctor_checks_are_pure_and_name_each_failure_in_chinese() -> None:
     ]
     assert all(passed for _, passed, _ in passing), passing
     assert "日本店" in judge_directory({"1000000000000001"}, parse_config(VALID_CONFIG).stores)[2]
+    run_log = judge_export_dir(_stat(st.S_IFDIR | 0o555, 231), 231, 501, name="运行记录目录")
+    assert run_log == ("运行记录目录", False, "属主自己没有写权限：服务写不了文件")
     not_roots = judge_code_owner(_stat(st.S_IFREG | 0o755, 231), Path("/x/venv/bin/python"))[2]
     assert "uid 231" in not_roots and "chown -R root:wheel" in not_roots
 
@@ -604,6 +734,7 @@ def test_doctor_on_a_private_temp_config_passes_and_calls_the_directory_once(
         ("配置内容", True),
         ("孩子读不到密钥", True),
         ("导出目录", True),
+        ("运行记录目录", True),
         ("代码属 root", True),
         ("登记 JSON", True),
         (f"端口 {port}", True),
@@ -654,6 +785,33 @@ def test_doctor_fails_when_the_interpreter_it_would_launch_is_missing(
     verdicts = {name: (passed, detail) for name, passed, detail in checks}
     passed, detail = verdicts["代码属 root"]
     assert passed is False and "不存在" in detail and str(tmp_path) in detail
+
+
+def test_doctor_fails_when_the_run_log_directory_cannot_be_written(
+    tmp_path: Path, root_owned_code: Path
+) -> None:
+    """2026-09-20 复审：运行记录所在目录写不了时，工具整段失败、CSV 却已落盘；
+    体检不能对此全绿。判定与导出目录同一套。"""
+    export_dir = tmp_path / "导出"
+    export_dir.mkdir()
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    os.chmod(locked, 0o555)
+    path = tmp_path / "config.toml"
+    paths = f'export_dir = "{export_dir}"\nrun_log_path = "{locked / "运行记录.csv"}"\n'
+    path.write_text(paths + VALID_CONFIG, encoding="utf-8")
+    os.chmod(path, 0o600)
+    try:
+        checks = doctor(
+            path, expect_uid=os.getuid(), child_uid=None, port=_free_port(), online=False
+        )
+    finally:
+        os.chmod(locked, 0o755)
+    names = [name for name, _, _ in checks]
+    assert names.index("运行记录目录") == names.index("导出目录") + 1
+    verdicts = {name: (passed, detail) for name, passed, detail in checks}
+    assert verdicts["导出目录"][0] is True
+    assert verdicts["运行记录目录"] == (False, "属主自己没有写权限：服务写不了文件")
 
 
 def test_doctor_on_an_open_config_fails_the_file_checks_and_never_calls_lingxing(
@@ -820,7 +978,7 @@ def test_shops_and_doctor_commands_use_the_service_uid_and_exit_codes(
     argv = ["doctor", "--config", str(private_config), "--port", str(port), "--offline"]
     assert cli.main(argv) == 0
     out = capsys.readouterr().out
-    assert "[失败]" not in out and "8/8 项通过" in out
+    assert "[失败]" not in out and "9/9 项通过" in out
     assert len(FakeClient.calls) == 1, "doctor --offline 不查名录"
 
     os.chmod(private_config, 0o644)

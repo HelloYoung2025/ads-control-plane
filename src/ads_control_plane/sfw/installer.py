@@ -20,10 +20,12 @@ logs/（0755）——被攻破的 `_adspack` 进程改不了自己下次启动�
 
 from __future__ import annotations
 
+import contextlib
 import grp
 import os
 import pwd
 import re
+import secrets
 import socket
 import stat
 import string
@@ -106,7 +108,9 @@ class InstallerError(Exception):
 @dataclass(frozen=True, kw_only=True)
 class Step:
     """一个副作用。`content` 在 write 里是文件内容，在 symlink 里是链接指向；
-    `owner` 写成 "用户" 或 "用户:组"；chown 一律递归。"""
+    `owner` 写成 "用户" 或 "用户:组"；chown/chmod 只作用于路径自身，不跟符号链接。
+    `keep_existing` 只对 mkdir 有意义：目录已存在时一步不动（孩子自己的 ~/.codex、
+    Homebrew 名下的 /usr/local/bin）；缺省则把已存在的目录也按 owner/mode 校正。"""
 
     kind: StepKind
     argv: tuple[str, ...] | None = None
@@ -114,6 +118,7 @@ class Step:
     content: str | None = None
     owner: str | None = None
     mode: int | None = None
+    keep_existing: bool = False
     why: str
 
 
@@ -225,8 +230,10 @@ def _run(argv: Sequence[str], why: str) -> Step:
     return Step(kind="run", argv=tuple(argv), why=why)
 
 
-def _mkdir(path: Path, owner: str, mode: int, why: str) -> Step:
-    return Step(kind="mkdir", path=path, owner=owner, mode=mode, why=why)
+def _mkdir(path: Path, owner: str, mode: int, why: str, *, keep_existing: bool = False) -> Step:
+    return Step(
+        kind="mkdir", path=path, owner=owner, mode=mode, keep_existing=keep_existing, why=why
+    )
 
 
 def _write(path: Path, content: str, owner: str, mode: int, why: str) -> Step:
@@ -393,6 +400,8 @@ def plan_install(
         )
 
     # ④ 产物目录：属 _adspack，别人只读。上一级也归它——运行记录.csv 写在那里。
+    #    已存在也照样校正：/Users/Shared 是 1777，谁都能先建出 ads-pack/；原样收编的话
+    #    服务写运行记录得 EACCES，而安装输出却印着「_adspack:_adspack」（2026-09-20 复审）。
     steps += [
         _mkdir(export_dir.parent, service, 0o755, "运行记录写在这一层"),
         _mkdir(export_dir, service, 0o755, "CSV 与报表落这里；孩子的账号只能读"),
@@ -417,13 +426,20 @@ def plan_install(
     # ⑥ 孩子的家目录只放三样：项目文件夹里的 AGENTS.md、斜杠命令、桌面上指向导出目录的链接。
     project_dir = child_home / PROJECT_DIR
     prompts_dir = child_home / ".codex" / "prompts"
+    #    孩子家里已有的目录一步不动（keep_existing）：~/.codex 里有他的登录态，不能被放开。
     steps += [
-        _mkdir(project_dir, child_user, 0o755, "孩子在 SFW 里打开的项目文件夹"),
+        _mkdir(project_dir, child_user, 0o755, "孩子在 SFW 里打开的项目文件夹", keep_existing=True),
         _write(
             project_dir / AGENTS_FILE, read_asset(AGENTS_FILE), child_user, 0o644, "给模型的纪律"
         ),
-        _mkdir(prompts_dir.parent, child_user, 0o755, "SFW 读斜杠命令的目录（已存在则不动）"),
-        _mkdir(prompts_dir, child_user, 0o755, "斜杠命令目录"),
+        _mkdir(
+            prompts_dir.parent,
+            child_user,
+            0o755,
+            "SFW 读斜杠命令的目录（已存在则不动）",
+            keep_existing=True,
+        ),
+        _mkdir(prompts_dir, child_user, 0o755, "斜杠命令目录", keep_existing=True),
         _write(
             prompts_dir / PROMPT_FILE, read_asset(PROMPT_FILE), child_user, 0o644, "/fd 那一句话"
         ),
@@ -433,8 +449,11 @@ def plan_install(
     ]
 
     # ⑦ 管理员命令：sudo ads-pack …
+    #    /usr/local/bin 在 Intel Mac 上常归 Homebrew 的管理员账号所有，已存在就不碰它的属主。
     steps += [
-        _mkdir(BIN_LINK.parent, "root:wheel", 0o755, "/usr/local/bin 有时不存在"),
+        _mkdir(
+            BIN_LINK.parent, "root:wheel", 0o755, "/usr/local/bin 有时不存在", keep_existing=True
+        ),
         _symlink(
             BIN_LINK,
             venv / "bin" / "ads-pack",
@@ -497,7 +516,9 @@ def execute(
         prefix = "[干跑] " if dry_run else ""
         print(f"{prefix}[{index}/{total}] {step.kind:<7} {_describe(step)} — {step.why}")
         if not dry_run:
-            _apply(step)
+            note = _apply(step)
+            if note:
+                print(f"    {note}")
 
 
 def _ids(owner: str) -> tuple[int, int]:
@@ -516,48 +537,117 @@ def _require_path(step: Step) -> Path:
     return step.path
 
 
-def _apply(step: Step) -> None:
-    if step.kind == "run":
-        subprocess.run(list(step.argv or ()), check=True)
-        return
-    path = _require_path(step)
-    if step.kind == "mkdir":
-        if path.is_dir():
-            return  # 已存在的目录不改属主与权限：可能是孩子自己的 ~/.codex
-        path.mkdir(mode=step.mode if step.mode is not None else 0o755)
-        if step.owner:
-            os.chown(path, *_ids(step.owner))
-        if step.mode is not None:
-            os.chmod(path, step.mode)
-    elif step.kind == "write":
-        mode = step.mode if step.mode is not None else 0o644
-        tmp = path.with_name(path.name + ".tmp")
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+def _open_parent(path: Path) -> tuple[int, str]:
+    """把绝对路径逐段以 O_NOFOLLOW 打开到父目录，返回 (父目录 fd, 最后一段名)。
+
+    安装器以 root 跑，而它写的三样东西在孩子家里。孩子只要把 `~/否定词` 或 `~/Desktop`
+    换成指向别处的符号链接、再在那里预置一个同名 `.tmp` 链接，root 跟着走一步就等于替他
+    截断任何文件并把属主交给他（2026-09-20 复审以非 root 复现了跟随与截断）。所以每一段
+    都用 O_NOFOLLOW 打开、后面的操作全部相对这个 fd：任何一段是符号链接就停，包括 macOS
+    自带的 /tmp、/var——安装器不写那里。
+    """
+    if not path.is_absolute() or path.name in ("", ".", ".."):
+        raise InstallerError(f"安装器只写绝对路径，且末段不能是 . 或 ..：{path}")
+    *parents, name = path.parts[1:]
+    fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for part in parents:
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd)
+            fd = child
+    except OSError as exc:
+        os.close(fd)
+        raise InstallerError(f"{path} 的上级目录打不开或是符号链接，不动它：{exc}") from exc
+    return fd, name
+
+
+def _set_owner_mode(parent: int, name: str, ids: tuple[int, int] | None, mode: int | None) -> None:
+    """给 parent 下的 name（文件或目录）设属主与权限：O_NOFOLLOW 打开后在 fd 上做，不跟链接。"""
+    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent)
+    try:
+        if ids is not None:
+            os.fchown(fd, *ids)
+        if mode is not None:
+            os.fchmod(fd, mode)
+    finally:
+        os.close(fd)
+
+
+def _apply_mkdir(parent: int, name: str, step: Step) -> str | None:
+    mode = step.mode if step.mode is not None else 0o755
+    ids = _ids(step.owner) if step.owner else None
+    try:
+        os.mkdir(name, mode, dir_fd=parent)
+    except FileExistsError:
+        st = os.stat(name, dir_fd=parent, follow_symlinks=False)
+        if not stat.S_ISDIR(st.st_mode):
+            raise InstallerError(f"{step.path} 已存在但不是目录（符号链接？），不动它") from None
+        if step.keep_existing:
+            return "已存在，不动"
+        _set_owner_mode(parent, name, ids, mode)
+        return "已存在，按上面的属主与权限校正"
+    _set_owner_mode(parent, name, ids, mode)
+    return None
+
+
+def _apply_write(parent: int, name: str, step: Step) -> None:
+    mode = step.mode if step.mode is not None else 0o644
+    ids = _ids(step.owner) if step.owner else None
+    # 随机临时名 + O_EXCL|O_NOFOLLOW：预置好的同名链接只会让这里报错，不会被跟着走。
+    # 写完 rename 到目标：目标若是符号链接，换掉的是链接本身，不是它指向的文件。
+    tmp = f".{name}.{secrets.token_hex(8)}.tmp"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+    fd = os.open(tmp, flags, mode, dir_fd=parent)
+    try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(step.content or "")
-            if step.owner:
-                os.fchown(fd, *_ids(step.owner))
+            if ids is not None:
+                os.fchown(fd, *ids)
             os.fchmod(fd, mode)
-        os.replace(tmp, path)
-    elif step.kind == "symlink":
-        target = step.content or ""
-        if path.is_symlink():
-            if os.readlink(path) == target:
-                return
-            path.unlink()
-        elif path.exists():
-            raise InstallerError(f"{path} 已存在且不是符号链接，不动它")
-        os.symlink(target, path)
-        if step.owner:
-            os.lchown(path, *_ids(step.owner))
-    elif step.kind == "chown":
-        uid, gid = _ids(step.owner or "")
-        os.lchown(path, uid, gid)
-        for directory, dirs, filenames in os.walk(path):
-            for name in dirs + filenames:
-                os.lchown(os.path.join(directory, name), uid, gid)
-    elif step.kind == "chmod":
-        os.chmod(path, step.mode if step.mode is not None else 0o644)
+        os.rename(tmp, name, src_dir_fd=parent, dst_dir_fd=parent)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp, dir_fd=parent)
+        raise
+
+
+def _apply_symlink(parent: int, name: str, step: Step) -> None:
+    target = step.content or ""
+    try:
+        st = os.stat(name, dir_fd=parent, follow_symlinks=False)
+    except FileNotFoundError:
+        st = None
+    if st is not None:
+        if not stat.S_ISLNK(st.st_mode):
+            raise InstallerError(f"{step.path} 已存在且不是符号链接，不动它")
+        if os.readlink(name, dir_fd=parent) == target:
+            return
+        os.unlink(name, dir_fd=parent)
+    os.symlink(target, name, dir_fd=parent)
+    if step.owner:
+        os.chown(name, *_ids(step.owner), dir_fd=parent, follow_symlinks=False)
+
+
+def _apply(step: Step) -> str | None:
+    """做一步。返回值是紧跟在计划行下面印给管理员看的补充说明（没有就 None）。"""
+    if step.kind == "run":
+        subprocess.run(list(step.argv or ()), check=True)
+        return None
+    parent, name = _open_parent(_require_path(step))
+    try:
+        if step.kind == "mkdir":
+            return _apply_mkdir(parent, name, step)
+        if step.kind == "write":
+            _apply_write(parent, name, step)
+        elif step.kind == "symlink":
+            _apply_symlink(parent, name, step)
+        elif step.kind == "chown":
+            _set_owner_mode(parent, name, _ids(step.owner or ""), None)
+        elif step.kind == "chmod":
+            _set_owner_mode(parent, name, None, step.mode if step.mode is not None else 0o644)
+        return None
+    finally:
+        os.close(parent)
 
 
 # ------------------------------------------------------------------ 宿主查询（只读）
@@ -694,13 +784,17 @@ def judge_child_cannot_read(st: os.stat_result | None, child_uid: int | None) ->
 
 
 def judge_export_dir(
-    st: os.stat_result | None, expect_uid: int | None, child_uid: int | None
+    st: os.stat_result | None,
+    expect_uid: int | None,
+    child_uid: int | None,
+    *,
+    name: str = "导出目录",
 ) -> Check:
-    name = "导出目录"
+    """导出目录与运行记录目录同一套判定：属 _adspack、属主可写、别人改不了、不是孩子的。"""
     if st is None:
-        return (name, False, "导出目录不存在：先 sudo ads-pack install")
+        return (name, False, f"{name}不存在：先 sudo ads-pack install")
     if not stat.S_ISDIR(st.st_mode):
-        return (name, False, "导出目录不是目录")
+        return (name, False, f"{name}不是目录")
     if expect_uid is not None and st.st_uid != expect_uid:
         return (name, False, f"属主是 uid {st.st_uid}，不是 {SERVICE_USER}（uid {expect_uid}）")
     if not st.st_mode & stat.S_IWUSR:
@@ -712,7 +806,7 @@ def judge_export_dir(
             f"权限 {stat.S_IMODE(st.st_mode):04o}：别的账号也能改文件，要 chmod 755",
         )
     if child_uid is not None and st.st_uid == child_uid:
-        return (name, False, f"导出目录的属主就是孩子（uid {child_uid}）：他能改文件")
+        return (name, False, f"{name}的属主就是孩子（uid {child_uid}）：他能改文件")
     return (name, True, f"属 uid {st.st_uid}、{stat.S_IMODE(st.st_mode):04o}：服务能写，孩子只能读")
 
 
@@ -826,6 +920,11 @@ def doctor(
     checks.append(judge_child_cannot_read(_stat_or_none(config_path), child_uid))
     export_dir = cfg.export_dir if cfg is not None else DEFAULT_EXPORT_DIR
     checks.append(judge_export_dir(_stat_or_none(export_dir), expect_uid, child_uid))
+    # 运行记录写在导出目录的上一层；那一层写不了时工具整段失败，体检不能全绿（2026-09-20 复审）。
+    run_log_dir = (cfg.run_log_path if cfg is not None else DEFAULT_RUN_LOG).parent
+    checks.append(
+        judge_export_dir(_stat_or_none(run_log_dir), expect_uid, child_uid, name="运行记录目录")
+    )
     checks.append(judge_code_owner(_stat_or_none(VENV_PYTHON), VENV_PYTHON))
     if cfg is not None:
         checks.append(judge_registration(registration_json(cfg.sfw_bearer, port=port)))

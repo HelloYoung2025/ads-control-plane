@@ -2,6 +2,8 @@
 
 SFW 电商 Pack 里的**否定词组件**：一个只读工具 `find_wasted_search_terms`。它读领星的搜索词报表，找出「花了钱却没出单」的搜索词，写成否定词 CSV 和一份报表。它不改任何广告：否定词只在人把 CSV 交给领星「否定投放」之后才生效，那一步在本组件之外、由人做。
 
+下面两节的步骤都是读 SFW 1.0.8 源码写出来的，2026-09-19 尚未在真机上走过；首次安装时逐步核对，对不上就停。
+
 ## 孩子怎么用（5 步）
 
 1. 打开 SFW。项目芯片应写着「否定词」；不是的话点芯片，在列表里选「否定词」。
@@ -13,8 +15,6 @@ SFW 电商 Pack 里的**否定词组件**：一个只读工具 `find_wasted_sear
 一家店通常半分钟内（2026-08-30 实测 30 天窗口 27.6 秒）；店多时最长 55 分钟（时间预算），等着就行。
 
 ## 管理员一次性安装（10 步）
-
-以下步骤 2026-09-19 尚未在真机上走过；首次安装时请逐步核对，对不上就停。
 
 1. 仓库目录里 `uv build --wheel`，得到 `dist/ads_control_plane-*.whl`。
 2. `sudo <仓库>/.venv/bin/python -m ads_control_plane.sfw install --wheel dist/<whl> --child-user <孩子的登录名>`：建系统用户 `_adspack`，把组件装进 `/Library/Application Support/ads-pack/`，写配置模板，建 `/Users/Shared/ads-pack/导出/`、LaunchDaemon、孩子的 `~/否定词/AGENTS.md`、`~/.codex/prompts/fd.md` 和桌面「否定词导出」链接，最后打印第 7 步要粘的 JSON。不启动服务。

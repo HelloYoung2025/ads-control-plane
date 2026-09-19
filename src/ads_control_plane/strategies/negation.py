@@ -87,7 +87,7 @@ class SearchTermRecord(BaseModel):
     #: 否掉是把好流量扔了）和来自 6 万次曝光（CTR 0.07%，纯粹不相关，该否）
     #: 是两个相反的结论，而证据行上「花费 87.40 / 点击 42 / 广告订单 0」两者逐字相同。
     #: None = 源侧没给或读不出来，不编（展示型指标解析失败不许毙掉候选，
-    #: 与 mirror/sync.py 的分法同源：判定型才抛，展示型置 None）。
+    #: 与当年镜像模块（已删）的分法同源：判定型才抛，展示型置 None）。
     impressions: int | None = None
     window_start: datetime
     window_end: datetime
@@ -484,8 +484,8 @@ def to_bulk_rows(candidate_set: NegationCandidateSet) -> tuple[BulkNegativeRow, 
                 ad_group_name=c.ad_group_name,
             )
         )
-    # 行序贴人的执行路径，不贴取数顺序。CSV 的每一行都是人到领星后台手工加的一条
-    # （runbook §④），而加的方式是「下钻到某个广告组 → 在它的『否定词』页签里加」。
+    # 行序贴人的执行路径，不贴取数顺序。CSV 的每一行都是人到领星后台手工加的一条，
+    # 而加的方式是「下钻到某个广告组 → 在它的『否定词』页签里加」。
     # 上游按花费倒序跨广告组交错取行，照抄过来就是让人在活动之间来回下钻几十次，
     # 同一个广告组反复打开——真实一批 50~150 行时这是纯粹的白跑。
     # 归组后组内保持原序（list.sort 稳定），也就是仍按花费从高到低——

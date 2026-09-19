@@ -133,7 +133,7 @@ class TestEvidenceGate:
     @pytest.mark.parametrize("field", ["window_start", "window_end", "data_as_of"])
     def test_naive_datetime_rejected_at_construction(self, field: str) -> None:
         # 在模型层挡住，而不是等到 generate_negation_candidates 里 now - data_as_of
-        # 抛裸 TypeError。mirror/run_window/mandate 都有这道闸，策略输入曾是唯一缺口。
+        # 抛裸 TypeError。当年镜像与授权书模块（已删）都有这道闸，策略输入曾是唯一缺口。
         kwargs: dict[str, object] = {
             "scope": make_scope(),
             "search_term": "cheap widget",
