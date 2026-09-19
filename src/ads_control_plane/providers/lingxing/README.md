@@ -5,9 +5,6 @@
 **读侧**：`search_terms.py` 已落地（NEG_EXACT 的真实搜索词源）。合同测试见
 `tests/unit/test_lingxing_search_terms.py`。
 
-**写侧**：Write Adapter 不在本目录——它只允许存在于 `executor/` 包（ADR-002），
-且在 DEC-010 写通道选型落地前不得动工。
-
 本仓库任何环境不得配置真实密钥（SECURITY.md）。
 
 ## 2026-08-30 更新前的状态，与它为什么不再成立

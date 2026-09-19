@@ -37,7 +37,7 @@
 | DEC-020 | 成本/退款/库存/汇率的权威数据源与 Owner？ | 数据 Owner | OPEN |
 | DEC-021 | 第一阶段主业务目标（按 Campaign）与 Break-even ACOS 正式定义？ | 业务 Owner | OPEN |
 | DEC-022 | 哪些对象同时受 Amazon 规则/领星规则/人工/代理商控制？能否建立单控制器 Canary 窗口？2026-08-28 实测控制器名单：领星 RuleEngine（自动规则）/StepBudget（递增预算）/TimingTactics（分时策略，会按时段覆盖竞价与预算），读侧 ads_strategy 字段可辨托管状态 | 业务+技术 Owner | OPEN |
-| DEC-023 | AI 可否无人值守触发对领星生产 API 的真实取数？2026-08-30 实测：`generate_negation_candidate_set` 是 AI 可调用工具，而 `POST /api/workbench/sync` 要求 HUMAN；即席模式（不带 mandate_id）不受配额/最小间隔/运行时段约束，一次调用是一轮多页读取（14 天窗口实测 2046 行 / 约 20 秒），节流仅靠 1.1s sleep 与 900s 缓存。当前处置是一道显式开关（ADS_CP_STRATEGY_LX_ENABLED），但**权限边界本身由「谁配了 key」决定**，未经裁决 | 业务+安全 Owner | OPEN |
+| DEC-023 | AI 可否无人值守触发对领星生产 API 的真实取数？2026-08-30 实测：`generate_negation_candidate_set` 是 AI 可调用工具，而 `POST /api/workbench/sync` 要求 HUMAN；即席模式（不带 mandate_id）不受配额/最小间隔/运行时段约束，一次调用是一轮多页读取（14 天窗口实测 2046 行 / 约 20 秒），节流仅靠 1.1s sleep 与 900s 缓存。**权限边界本身由「谁配了 key」决定**，未经裁决 | 业务+安全 Owner | OPEN |
 | DEC-024 | `spends` 是站点本币还是折算后的口径？它直接喂 `min_spend` 门槛，折算过则我们盖的币种章是系统性谎言。2026-08-30 已按站点推币种（MARKETPLACE_CURRENCY），该推断建立在「本币」假设上。验证方式：取一个已知活动，对比领星后台显示花费与网关返回的 `spends`。**首次真实写入前必须完成** | 技术 Owner（后台比对） | OPEN |
 | DEC-025 | commit `42d705c`（2026-08-29）的**提交信息**含真实 Profile ID，违反 SECURITY.md「仓库零 Secret」。2026-08-30 核实：工作树与已跟踪文件内容干净，只有这一条 commit message；该提交仍在 HEAD 历史上，其后 38 个提交；仓库当前**无任何远端**，历史从未离开本机。清除需改写这 38 个提交（破坏性、不可逆），是否执行由 Owner 定 | 安全 Owner | OPEN |
 
@@ -53,14 +53,14 @@
 | DEC-105 | StrategySpec 表达式 DSL 降级为 rule_class 闭集枚举 + 参数包白名单；DSL 移 P2，触发条件"≥2 团队需要不发版改规则"。 | 2026-08-28 |
 | DEC-106 | MVP 回测 = 决策重放（触发正确性/ABSTAIN/振荡），结果栏强制 INCONCLUSIVE；结果型回测在 bid→CPC 映射经 Canary 实测校验后解锁。 | 2026-08-28 |
 | DEC-107 | 禁止 SQLite/内存库作触库测试替身（RLS/SKIP LOCKED/SET LOCAL 为 PG 专有语义）；CI 使用真实 PostgreSQL；纯业务逻辑以不触库纯函数编写。 | 2026-08-28 |
-| DEC-108 | 执行器物理拆为 uv workspace 独立包（依赖单向 executor→core，CI 断言）；已实施。 | 2026-08-28 |
+| DEC-108 | 执行器物理拆为 uv workspace 独立包（依赖单向 executor→core，CI 断言）。 | 2026-08-28 |
 | DEC-109 | 限流类"证明未执行"拒绝走有界重投通道（不杀 Intent），本地桶感知节流置于单提交 CAS 之前；安全不变量精确化为"可能已生效的提交 ≤ 1"；已实施并有测试。 | 2026-08-28 |
 | DEC-110 | 完整 WORM 副本 defer 至 Gate 4 准入前；首期 = append-only 异地导出 + 完整性 Hash；Control Ledger 同步预写不可妥协。 | 2026-08-28 |
 | DEC-111 | 业务 Owner 裁决：自动化起点 = 阶梯式（AI 提案 → 人批准 → 指标达标后逐级解锁自动），确认 L1/L1.5 台阶；终态目标为有界自动。 | 2026-08-28 |
 | DEC-015 | 业务 Owner 裁决：单个 Negative Exact 选定为首批策略（原问题"是否列为白名单候选"以更强形式关闭）。 | 2026-08-28 |
 | DEC-112 | 首批策略实现形态 = NEG_EXACT 候选纵切（证据门 conversions==0 不可参数化 + 参数包白名单 + 集合冻结 Hash 审批 + Bulk 行导出 + 操作日志核验），零 Provider 写；已实施并有测试（`strategies/`）。 | 2026-08-28 |
 | DEC-113 | 业务 Owner 裁决：策略结论禁止无目标函数的"优化好了"语义——每个 rule_class 必须绑定显式目标函数与估计量。NEG_EXACT 目标函数 = WASTED_SPEND_REMOVED（估计量 = 已核验候选的窗口花费之和，causality 恒标 INCONCLUSIVE，因果版本待 holdout）；已实施（`estimate_waste_removed`）。 | 2026-08-28 |
-| DEC-114 | 业务 Owner 裁决："批准"演进为目标授权（填写目标 → 形成参数列表 → 系统对着参数列表运行）。实现为 AutomationMandate：目标函数 + 参数包合同（自包含，授权模式下拒绝调用方参数覆盖）+ 配额（日运行数/单次候选数/有效期 ≤30 天）+ 人签发、单人可撤销、AI 不可签不可撤。当前消费点 = 候选自动生成；执行侧自动化字段待 Gate 3 授权后以重签方式扩展。已实施（`strategies/mandate.py`）。 | 2026-08-28 |
+| DEC-114 | 业务 Owner 裁决："批准"演进为目标授权（填写目标 → 形成参数列表 → 系统对着参数列表运行）。实现为 AutomationMandate：目标函数 + 参数包合同（自包含，授权模式下拒绝调用方参数覆盖）+ 配额（日运行数/单次候选数/有效期 ≤30 天）+ 人签发、单人可撤销、AI 不可签不可撤。当前消费点 = 候选自动生成；执行侧自动化字段待 Gate 3 授权后以重签方式扩展。 | 2026-08-28 |
 | DEC-115 | 调整频次入授权书合同（Owner 需求）：`run_interval_minutes` 白名单 [60, 10080]，间隔未到运行即拒（RUN_TOO_SOON）。"10 分钟一次"被白名单排除——理由是数据物理：搜索词报告日级、领星读为 Amazon 缓存（滞后分钟~天级），快于数据刷新的运行读到同一份缓存、只产生重复决策；否词类建议 1440。已实施并有测试。 | 2026-08-28 |
 | DEC-116 | 业务目标场景入白名单枚举（清仓/打新品/推高销量 + 降无效花费）：每个目标绑定数据就绪条件，未就绪签发即拒并列出缺项（OBJECTIVE_NOT_READY，缺项定义见 DEC-118）。已实施（`ObjectiveKind` + `OBJECTIVE_DATA_REQUIREMENTS`）。 | 2026-08-28 |
 | DEC-117 | 广告历史数据库确认为 P1 首工单（Owner 需求：保存现在广告的数据用于历史记录）：PostgreSQL append-only 快照（recorded_at/source_as_of 双时间 + raw 留档），采集接通当天即入库；Mock 阶段不建库（无真实数据可存）。CI 用真实 PG（DEC-107）。2026-08-28 补：任务/诊断报告/计划/调整指令同库入表；调整历史由 Control Ledger 承担；向量数据库判定为当前非需求（Owner 所需均为结构化时序查询，PG 即正解），不预建。 | 2026-08-28 |
