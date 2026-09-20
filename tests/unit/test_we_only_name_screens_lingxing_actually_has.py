@@ -49,3 +49,31 @@ def test_the_walkthrough_that_backs_those_names_is_still_there() -> None:
     # 一道靠证据说话的守卫，证据没了就该先红。
     assert _IA.exists()
     assert "否定投放" in _IA.read_text(encoding="utf-8")
+
+
+#: 两个页签实测都存在，名字都能通过上面那条子串校验，但它们收的东西不一样：
+#: 「关键词 ↔ 否定词」「商品投放 ↔ 否定投放」（清单见 lx-ads-ia-20260829.md §1）。
+#: 2026-09-20 真事：汇总回答与 README 开篇把否定**关键词** CSV 指向「否定投放」，
+#: 而本仓库自己在 negation.py 的注释里写着关键词要去「否定词」页签加。管理员照做会
+#: 打开一个粘不进关键词的页面，没有任何报错告诉他走错了——上面那条守卫看得见名字
+#: 存在、看不见指错了哪一个。
+_ASIN_CONTEXT = ("ASIN", "asin", "商品投放")
+
+
+def test_we_do_not_send_keyword_negatives_to_the_product_targeting_tab() -> None:
+    offenders: list[str] = []
+    for rel in _SPEAKS_TO_HUMANS:
+        text = (_ROOT / rel).read_text(encoding="utf-8")
+        lines = text.splitlines()
+        for match in re.finditer(r"领星「否定投放」", text):
+            line_no = text[: match.start()].count("\n") + 1
+            # 窗口取前后各一行：这些句子常被 Python 的隐式字符串拼接断成两行，
+            # 「ASIN」落在上一行，只看当前行会把对的句子也报成错的。
+            window = "\n".join(lines[max(0, line_no - 2) : line_no + 1])
+            if not any(mark in window for mark in _ASIN_CONTEXT):
+                offenders.append(f"{rel}:{line_no}: {lines[line_no - 1].strip()}")
+    assert not offenders, (
+        "「否定投放」是 ASIN/商品投放那一侧的页签；否定关键词要去「否定词」页签加。\n"
+        + "\n".join(offenders)
+        + "\n同一行里没出现 ASIN/商品投放，说明这句话多半在讲关键词，指错了页签。"
+    )

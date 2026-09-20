@@ -337,7 +337,7 @@ class LingxingSearchTermSource:
             unjudged_groups=unjudged,
             unattributable_rows=counts.unattributable,
             # 读不出来的行总数与真正参与聚合的行数一起报出去，账才对得上：
-            # source_total = 汇总行 + 重复行 + 读不出来的行 + 可用行。少一格，
+            # source_total = 读不出来的行 + 可用行；汇总行与重复行在 total 之外。少一格，
             # 有身份但指标读不出来的那些行在任何行级计数里都不出现。
             unreadable_rows=counts.rejected,
             usable_rows=len(parsed),

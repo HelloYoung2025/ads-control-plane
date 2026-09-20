@@ -868,7 +868,8 @@ def judge_port(state: PortState, port: int) -> Check:
         False,
         f"被别的程序占用（GET /mcp 没得到 401）：用 sudo lsof -nP -iTCP:{port} -sTCP:LISTEN "
         "查是谁并停掉它；真要换端口得改 /Library/LaunchDaemons/local.ads-pack.plist 里的 "
-        "--port，再 stop/start，并用 print-registration --port 重新登记",
+        "--port，再 sudo ads-pack stop、sudo ads-pack start --port <新端口>，"
+        "并用 print-registration --port 重新登记",
     )
 
 

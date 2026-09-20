@@ -611,7 +611,7 @@ def test_time_budget_reports_stores_not_reached(tmp_path: Path) -> None:
     text = summarize(runs, cfg)
     assert "**店03**：本轮没轮到（时间不够）；敲 /new 回车，再敲 /fd 回车回车。" in text
     assert text.endswith(
-        "有文件的店：把 CSV 交给管理员，他在领星「否定投放」里加上才算数；本工具不改任何广告。"
+        "有文件的店：把 CSV 交给管理员，他在领星「否定词」里加上才算数；本工具不改任何广告。"
     ), "有 CSV 就要告诉孩子交给谁——整条链上此前唯一没写的一环"
     assert "[否定词-店01-" in text and "[否定词-店02-" in text and "店03-" not in text
     assert source.read_call_count == 2, "没轮到的店一次数都不取"

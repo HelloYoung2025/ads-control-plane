@@ -397,7 +397,7 @@ def summarize(runs: Sequence[StoreRun], cfg: PackConfig) -> str:
         blocks.append("\n".join(lines))
     tail = _threshold_line(runs, cfg)
     if any(run.csv_path is not None for run in runs):
-        tail += "\n有文件的店：把 CSV 交给管理员，他在领星「否定投放」里加上才算数；"
+        tail += "\n有文件的店：把 CSV 交给管理员，他在领星「否定词」里加上才算数；"
         tail += "本工具不改任何广告。"
     return tail if not blocks else "\n\n".join([*blocks, tail])
 
