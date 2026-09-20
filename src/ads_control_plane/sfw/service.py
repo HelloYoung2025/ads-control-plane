@@ -195,9 +195,24 @@ def run_store(
             error_code=exc.code,
         )
     if not result.candidates:
+        outcome = _empty_outcome(fetch, result)
+        if outcome is RunOutcome.NO_USABLE_ROWS:
+            # 这条路此前一行日志都不写，而它给孩子的回答以「找管理员」结尾：
+            # 管理员拿着那句话去查，日志里什么都没有，doctor 也管不到这类。
+            # 两种成因在这里分得开（坏行 / 同组行对不上活动），写出来的就是账目本身。
+            logger.error(
+                "%s 没有一组能判断：上游 %s 行，读不出来 %d 行，归不到组 %d 行，"
+                "可用 %d 行，整组没判断 %d 组",
+                store.nickname,
+                fetch.source_total,
+                fetch.unreadable_rows,
+                fetch.unattributable_rows,
+                fetch.usable_rows,
+                len(fetch.unjudged_groups),
+            )
         return StoreRun(
             store=store,
-            outcome=_empty_outcome(fetch, result),
+            outcome=outcome,
             window=window,
             pack=pack,
             fetch=fetch,
@@ -253,6 +268,13 @@ def run_all(
 
     预算在每家店**开跑前**检查：第一家永远会跑，用尽后其余店一律 NOT_RUN。
     不在跑到一半时中断——半家店的文件比没有文件更坏。
+
+    于是预算**不是**整次调用的上界：最后开跑的那家店整个跑在预算之外。网关退化时
+    单店可以跑很久（每页两次往返、每次 60 秒超时、最多 20 页），整次调用就可能越过
+    SFW 登记的 tool_timeout_sec；越过那一刻孩子读到的是「工具没连上」，而服务其实
+    还在跑。这里不猜一个「单店最坏耗时」去提前收手——那个数只有 Provider 知道，
+    猜小了照样超时，猜大了会平白少跑几家店。能做的是留痕：超了就写一行 WARNING，
+    让管理员查得到「这次跑了多久」，而不是面对一句假的「没连上」和一份全绿的体检。
     """
     started = monotonic()
     runs: list[StoreRun] = []
@@ -270,6 +292,15 @@ def run_all(
                 run = replace(run, csv_path=csv_path, html_path=html_path)
         report.append_run_log(cfg.run_log_path, run, now=now)
         runs.append(run)
+    elapsed = monotonic() - started
+    if elapsed > cfg.time_budget_seconds:
+        # 不引 installer 里那个 3600：服务运行期不该 import 管理员侧的安装器。
+        logger.warning(
+            "这次跑了 %.0f 秒，超过时间预算 %.0f 秒；越过 SFW 登记的工具超时那一刻，"
+            "孩子读到的会是「工具没连上」，而服务其实还在跑",
+            elapsed,
+            cfg.time_budget_seconds,
+        )
     return tuple(runs)
 
 
@@ -333,7 +364,7 @@ def _first_line(run: StoreRun) -> str:
     fetch, result, pack = run.fetch, run.result, run.pack
     if outcome is RunOutcome.NO_USABLE_ROWS:
         rows = fetch.source_total if fetch.source_total is not None else fetch.unreadable_rows
-        return head + f"取到了 {rows} 行，但一行都读不出来（数据形状不对），找管理员。"
+        return head + f"取到了 {rows} 行，但没有一组能判断，找管理员。"
     if outcome is RunOutcome.NO_ROWS:
         return head + "这段时间没有搜索词数据。"
     if outcome is RunOutcome.ALL_ASIN:

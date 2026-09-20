@@ -357,6 +357,47 @@ def _assert_report_link_only(line: str, nickname: str, export_dir: Path) -> None
     assert re.fullmatch(rf"报表：\[{name}\]\({re.escape(str(export_dir))}/{name}\)", line), line
 
 
+def test_overrunning_the_budget_leaves_a_line_in_the_log(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """预算不是整次调用的上界，那就得说得出这次跑了多久。
+
+    最后开跑的那家店整个跑在预算之外；网关退化时整次调用可能越过 SFW 登记的工具超时，
+    而孩子那边读到的是「工具没连上」——服务其实还在跑，doctor 也查不到（服务是活的）。
+    日志里这一行是管理员唯一能拿到的证据。
+    """
+    stores: list[Store] = [("p-1", "s-1", "US", "USD", "店01")]
+    cfg = parse_config(config_text(tmp_path, stores, time_budget=60, min_spend=('USD = "20.00"',)))
+    # run_all 按顺序读表三次：起点、这家店开跑前、全部跑完之后。
+    # 开跑前预算还剩得多（10 < 60），跑完已经 500 秒——正是"最后一家整个跑在预算之外"。
+    ticks = iter([0.0, 10.0, 500.0])
+
+    with caplog.at_level(logging.WARNING, logger="ads_control_plane.sfw"):
+        runs = run_all(cfg, MockSearchTermSource(), now=NOW, monotonic=lambda: next(ticks))
+    assert [run.outcome for run in runs] != [RunOutcome.NOT_RUN], "这家店本该真的跑了"
+    assert [r.getMessage() for r in caplog.records if "超过时间预算" in r.getMessage()], (
+        "跑超了预算却一行日志都没有"
+    )
+
+
+def test_nobody_can_be_judged_leaves_a_line_in_the_log(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """这句话以「找管理员」结尾，那么日志里就得有东西等着他。
+
+    它此前一行日志都不写，而 doctor 也管不到这类（只看配置、权限、端口与名录），
+    于是管理员被那句话指向一条不存在的排查路径。顺带：这条分支在一行都没坏时也会
+    走到（同一个广告组的行对不上活动），所以那句话不能再预设「一行都读不出来」。
+    """
+    with caplog.at_level(logging.ERROR, logger="ads_control_plane.sfw"):
+        runs, _, _ = _every_empty_outcome(tmp_path)
+    assert RunOutcome.NO_USABLE_ROWS in [run.outcome for run in runs]
+    lines = [r.getMessage() for r in caplog.records if "没有一组能判断" in r.getMessage()]
+    assert lines, "没有一组能判断的那家店，日志里一行都没有"
+    assert "坏行店" in lines[0], "日志得说是哪家店"
+    assert "整组没判断" in lines[0], "两种成因得分得开：账目本身就是分法"
+
+
 def test_an_empty_run_says_which_reason_it_was(tmp_path: Path) -> None:
     runs, text, export_dir = _every_empty_outcome(tmp_path)
     assert [run.outcome for run in runs] == [
@@ -371,7 +412,7 @@ def test_an_empty_run_says_which_reason_it_was(tmp_path: Path) -> None:
     ]
     one_liners = {
         "无源店": "这家店没接上数据源，找管理员。",
-        "坏行店": "取到了 7 行，但一行都读不出来（数据形状不对），找管理员。",
+        "坏行店": "取到了 7 行，但没有一组能判断，找管理员。",
         "空店": "这段时间没有搜索词数据。",
         "断网店": "取数失败（LX_TRANSPORT_ERROR），文件没有更新；等 1 分钟，"
         "敲 /new 回车，再敲 /fd 回车回车，还不行找管理员。",
