@@ -34,7 +34,6 @@ from ads_control_plane.strategies.negation import (
     render_bulk_csv,
     to_bulk_rows,
 )
-from ads_control_plane.strategies.ports import ATTRIBUTION_LAG_DAYS
 
 if TYPE_CHECKING:  # 只要类型：service 在运行期 import 本模块，反向只能是注解
     from ads_control_plane.sfw.service import StoreRun
@@ -204,7 +203,7 @@ def render_report_html(run: StoreRun) -> str:
         f"<p><strong>{_e(headline)}。</strong></p>",
         "<p>统计 "
         + _e(_day_span(run.window[0], run.window[1]))
-        + f"（最近 {ATTRIBUTION_LAG_DAYS} 天不计入）；门槛：花费 ≥ "
+        + "（最后几天的订单还没结算完，不算进来）；门槛：花费 ≥ "
         + _e(f"{pack.min_spend.amount} {pack.min_spend.currency}")
         + f"、点击 ≥ {pack.min_clicks}；"
         f"回看 {pack.lookback_days} 天。</p>",

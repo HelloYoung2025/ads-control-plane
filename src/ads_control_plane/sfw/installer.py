@@ -423,7 +423,23 @@ def plan_install(
         )
     )
 
-    # ⑥ 孩子的家目录只放三样：项目文件夹里的 AGENTS.md、斜杠命令、桌面上指向导出目录的链接。
+    # ⑥ 管理员命令：sudo ads-pack …
+    #    排在孩子家目录之前：那一组遇到障碍就会停（例如 ~/Desktop 被 iCloud「桌面与文稿」
+    #    做成符号链接），而 README 第 4–6 步全要用 ads-pack。管理员自己的命令不该被
+    #    孩子家里的东西挡住——两组之间没有任何依赖。
+    #    /usr/local/bin 在 Intel Mac 上常归 Homebrew 的管理员账号所有，已存在就不碰它的属主。
+    steps += [
+        _mkdir(
+            BIN_LINK.parent, "root:wheel", 0o755, "/usr/local/bin 有时不存在", keep_existing=True
+        ),
+        _symlink(
+            BIN_LINK,
+            venv / "bin" / "ads-pack",
+            None,
+            "管理员命令：sudo ads-pack shops/doctor/start",
+        ),
+    ]
+    # ⑦ 孩子的家目录只放三样：项目文件夹里的 AGENTS.md、斜杠命令、桌面上指向导出目录的链接。
     project_dir = child_home / PROJECT_DIR
     prompts_dir = child_home / ".codex" / "prompts"
     #    孩子家里已有的目录一步不动（keep_existing）：~/.codex 里有他的登录态，不能被放开。
@@ -448,19 +464,6 @@ def plan_install(
         ),
     ]
 
-    # ⑦ 管理员命令：sudo ads-pack …
-    #    /usr/local/bin 在 Intel Mac 上常归 Homebrew 的管理员账号所有，已存在就不碰它的属主。
-    steps += [
-        _mkdir(
-            BIN_LINK.parent, "root:wheel", 0o755, "/usr/local/bin 有时不存在", keep_existing=True
-        ),
-        _symlink(
-            BIN_LINK,
-            venv / "bin" / "ads-pack",
-            None,
-            "管理员命令：sudo ads-pack shops/doctor/start",
-        ),
-    ]
     return tuple(steps)
 
 

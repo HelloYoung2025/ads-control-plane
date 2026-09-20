@@ -390,7 +390,7 @@ def test_an_empty_run_says_which_reason_it_was(tmp_path: Path) -> None:
         assert first == f"**{nickname}**：{sentence}"
         _assert_report_link_only(second, nickname, export_dir)
     assert text.split("\n\n")[-1] == (
-        f"门槛：统计 2026-08-18 到 {WINDOW_LAST_DAY}（最近 3 天不计入）；"
+        f"门槛：统计 2026-08-18 到 {WINDOW_LAST_DAY}（最后几天的订单还没结算完，不算进来）；"
         "花费 ≥ 20.00 USD、3000 JPY（按店币种）；点击 ≥ 25。"
         "有一些数据读不懂、已经跳过：上面每家店的结论只覆盖读得懂的那部分。"
         "\n本工具不改任何广告。"
@@ -535,7 +535,7 @@ def test_html_report_is_self_contained(tmp_path: Path) -> None:
     assert "b0demo0001" in html and "否定投放" in html
     assert "old widget" in html and "STALE_DATA" in html
     assert "上游总行数" in html and "20.00 USD" in html and "点击 ≥ 25" in html
-    assert f"统计 2026-08-18 到 {WINDOW_LAST_DAY}（最近 3 天不计入）" in html
+    assert f"统计 2026-08-18 到 {WINDOW_LAST_DAY}（最后几天的订单还没结算完，不算进来）" in html
 
 
 def test_more_than_200_candidates_are_truncated_by_spend_and_said_so(tmp_path: Path) -> None:

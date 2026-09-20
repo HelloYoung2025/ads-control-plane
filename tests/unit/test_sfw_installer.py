@@ -413,8 +413,14 @@ def test_install_plan_covers_the_eight_admin_steps(assets: Path, tmp_path: Path)
     [link] = _by_path(steps, home / "Desktop" / "否定词导出")
     assert (link.kind, link.content, link.owner) == ("symlink", str(DEFAULT_EXPORT_DIR), "kid")
 
-    # ⑦ /usr/local/bin/ads-pack → venv 里的脚本。
+    # /usr/local/bin/ads-pack → venv 里的脚本，且必须排在孩子家目录那一组之前：
+    # 那一组遇到障碍就会停（iCloud 把 ~/Desktop 做成符号链接是最常见的一种），
+    # 而 README 第 4–6 步全要用 ads-pack。管理员的命令不该被孩子家里的东西挡住。
     [bin_link] = _by_path(steps, Path("/usr/local/bin/ads-pack"))
+    paths = [str(s.path) for s in steps]
+    assert paths.index("/usr/local/bin/ads-pack") < min(
+        i for i, p in enumerate(paths) if "/home/kid" in p
+    ), "管理员命令要排在孩子家目录之前"
     assert (bin_link.kind, bin_link.content) == ("symlink", str(DEFAULT_ROOT / "venv/bin/ads-pack"))
 
     # 每一步都说得出为什么，且没有 chmod（新装的东西在建时就带权限）。

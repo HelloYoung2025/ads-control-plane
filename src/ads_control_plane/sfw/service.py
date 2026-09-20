@@ -46,7 +46,6 @@ from ads_control_plane.strategies.negation import (
     generate_negation_candidates,
 )
 from ads_control_plane.strategies.ports import (
-    ATTRIBUTION_LAG_DAYS,
     SearchTermFetch,
     SearchTermReadPort,
     SearchTermSourceError,
@@ -374,7 +373,8 @@ def _threshold_line(runs: Sequence[StoreRun], cfg: PackConfig) -> str:
     unattributable = sum(run.fetch.unattributable_rows for run in runs if run.fetch is not None)
     line = (
         f"门槛：统计 {start.date().isoformat()} 到 {last_day}"
-        f"（最近 {ATTRIBUTION_LAG_DAYS} 天不计入）；花费 ≥ {spend}（按店币种）；"
+        "（最后几天的订单还没结算完，不算进来）；"
+        f"花费 ≥ {spend}（按店币种）；"
         f"点击 ≥ {cfg.thresholds.min_clicks}。"
     )
     if unjudged or unattributable:

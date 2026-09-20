@@ -34,7 +34,9 @@ key = ""
 # currency = "USD"
 # nickname = "美国店"
 
-# 判定门槛：回看天数 7 到 90；点击至少 10；数据最多多旧（小时）1 到 72。
+# 判定门槛：回看天数 7 到 90；点击至少 10。
+# max_data_staleness_hours 量的是**取数缓存的年龄**，不是领星那边数据有多陈：
+# 缓存最长 1 小时，所以填 2 以上等同于关闭这道门（合法范围仍是 1 到 72）。
 [thresholds]
 lookback_days = 30
 min_clicks = 25
