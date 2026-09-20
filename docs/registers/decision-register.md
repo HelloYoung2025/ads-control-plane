@@ -38,7 +38,7 @@
 | DEC-021 | 第一阶段主业务目标（按 Campaign）与 Break-even ACOS 正式定义？ | 业务 Owner | OPEN |
 | DEC-022 | 哪些对象同时受 Amazon 规则/领星规则/人工/代理商控制？能否建立单控制器 Canary 窗口？2026-08-28 实测控制器名单：领星 RuleEngine（自动规则）/StepBudget（递增预算）/TimingTactics（分时策略，会按时段覆盖竞价与预算），读侧 ads_strategy 字段可辨托管状态 | 业务+技术 Owner | OPEN |
 | DEC-024 | `spends` 是站点本币还是折算后的口径？它直接喂 `min_spend` 门槛，折算过则我们盖的币种章是系统性谎言。2026-08-30 已按站点推币种（MARKETPLACE_CURRENCY），该推断建立在「本币」假设上。验证方式：取一个已知活动，对比领星后台显示花费与网关返回的 `spends`。**首次真实写入前必须完成** | 技术 Owner（后台比对） | OPEN |
-| DEC-025 | commit `42d705c`（2026-08-29）的**提交信息**含真实 Profile ID，违反 SECURITY.md「仓库零 Secret」。2026-08-30 核实：工作树与已跟踪文件内容干净，只有这一条 commit message；该提交仍在 HEAD 历史上，其后 38 个提交；仓库当前**无任何远端**，历史从未离开本机。清除需改写这 38 个提交（破坏性、不可逆），是否执行由 Owner 定 | 安全 Owner | OPEN |
+| DEC-025 | 仓库历史违反 SECURITY.md「零 Secret」。2026-09-20 全历史扫描实测：提交信息里含真实 Profile ID 的是 `42d705c` 一条，含真实店名的有三条（`42d705c`/`a0c354d`/`0eb1330`，另带该账户店铺数与单店广告层规模）；另有九条提交信息含实测经营数字。文件侧：`docs/evidence/lx-response-…-20260830.json` 的嵌套块与指标值从未脱敏，该脏 blob 出现在 101 个提交的树里。HEAD 已于 2026-09-20 全部改正，历史未动。清除历史需改写全部提交（破坏性、不可逆），是否执行由 Owner 定；在此之前不得把旧历史推往任何远端。 | 安全 Owner | OPEN |
 
 ## 已决
 

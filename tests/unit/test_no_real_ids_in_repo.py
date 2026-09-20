@@ -12,6 +12,7 @@ SECURITY.md「密钥政策」第一条逐字要求：「代码、配置、fixtur
 仓库的对象 ID 都被人过一遍眼，回答「这个是我编的，还是从真实账户里粘来的？」
 """
 
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -54,6 +55,36 @@ SYNTHETIC_IDS = frozenset(
         "286101123467242",
     }
 )
+
+#: 不得出现在仓库里的真实标识词，以 sha256 存放——真值写进这张表本身就是泄露。
+#: 2026-09-20 加：当天查出真实店名、品牌词与本机用户名散落在证据文件、调研笔记与评审
+#: 文书里三周无人发现，而上面那套按 ID 字段名取值的判定对「名字」一类完全看不见。
+#: 新增一个词：本机跑 `python -c "import hashlib;print(hashlib.sha256(b'<词>').hexdigest())"`，
+#: 把哈希贴进来，别贴词。
+FORBIDDEN_TOKEN_HASHES = frozenset(
+    {
+        "31e8d56525a42776ea9e2aa4ac95a587aede11df1c116438769ae4a2000bed10",
+        "04dbf032b698c403a6059b4e0b3fd51e7bff0befbf7e933b3c73b3df4fd0d49f",
+        "29eacb030399fc3001c63e203fa292c6295eb54691ed5109958edd3a1a6169d9",
+        "f55a714867f23769c4ecc2570b189feeff09fde247d9cc37394abf9ed821b380",
+    }
+)
+
+#: 切词只为了把「店名-站点」这类值切成能逐个求哈希的片段，不求语言学上的正确。
+_TOKEN = re.compile(r"[A-Za-z][A-Za-z0-9_]{2,}")
+
+
+def _forbidden_tokens_in(path: Path, text: str) -> list[str]:
+    found: list[str] = []
+    for match in _TOKEN.finditer(text):
+        token = match.group(0).lower()
+        if hashlib.sha256(token.encode()).hexdigest() in FORBIDDEN_TOKEN_HASHES:
+            line = text[: match.start()].count("\n") + 1
+            found.append(
+                f"{path.relative_to(REPO)}:{line}: 禁用标识词（见 FORBIDDEN_TOKEN_HASHES）"
+            )
+    return found
+
 
 SCANNED_SUFFIXES = {".py", ".md", ".json", ".js", ".html", ".toml", ".yaml", ".yml", ".example"}
 SKIP_DIRS = {
@@ -155,6 +186,7 @@ def test_no_real_object_ids_anywhere_in_the_repo() -> None:
         allowed = _emitted_ids(text) if path.suffix == ".json" else None
         if path.suffix == ".json":
             offenders.extend(_offenders_in_json(path, text, allowed or frozenset()))
+        offenders.extend(_forbidden_tokens_in(path, text))
         offenders.extend(
             line
             for line in _offenders_in_text(path, text)
@@ -185,6 +217,15 @@ def test_a_sanitized_file_only_gets_a_pass_for_the_ids_it_listed(tmp_path: Path)
     assert not [o for o in offenders if listed in o], "单子上的值是脚本自己吐的，放行"
     assert _emitted_ids('{"sanitized": {}}') == frozenset(), "没有单子就等于一个都不放行"
     assert _emitted_ids('{"rows": []}') is None, "没声明脱敏的文件不走白名单这条路"
+
+
+def test_the_forbidden_word_list_catches_a_real_store_name() -> None:
+    """名字类泄露：按 ID 字段名取值的那套完全看不见，这张哈希表是唯一的机械闸。"""
+    probe = "ES" + "OON" + "-US"  # 真值不以完整串出现在源码里，否则守卫抓的第一个泄露是它自己
+    path = Path(__file__)
+    assert _forbidden_tokens_in(path, f"实测店铺 {probe} 的活动数")
+    assert not _forbidden_tokens_in(path, "实测店铺 SYNTH-STORE 的活动数")
+    assert _forbidden_tokens_in(path, "/Users/" + "young" + "hu/Documents")
 
 
 def test_guard_actually_catches_a_realistic_id() -> None:
