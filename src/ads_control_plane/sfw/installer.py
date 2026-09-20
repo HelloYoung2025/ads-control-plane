@@ -857,9 +857,18 @@ def judge_registration(payload: Mapping[str, object]) -> Check:
     return ("登记 JSON", True, "键、名称、地址、口令、超时都合规")
 
 
-def judge_port(state: PortState, port: int) -> Check:
+def judge_port(state: PortState, port: int, *, daemon_registered: bool) -> Check:
     name = f"端口 {port}"
     if state == "free":
+        if daemon_registered:
+            # 「登记了但没人听」就是服务死了。此前这里一律判通过，于是助手说「工具没连上」、
+            # 管理员照 README 跑 doctor，拿到的是一份全绿报告和退出码 0，下一步无处可去。
+            return (
+                name,
+                False,
+                f"LaunchDaemon {LABEL} 已登记，但没人在听：服务没起来。"
+                f"先看 {LOG_PATH}，再 sudo ads-pack start",
+            )
         return (name, True, "空闲，可以 start")
     if state == "ours":
         return (name, True, "已由本服务占用（GET /mcp 得 401），start 之后就该这样")
@@ -929,6 +938,7 @@ def doctor(
     child_uid: int | None,
     port: int,
     online: bool,
+    daemon_registered: bool,
     client_factory: ClientFactory | None = None,
 ) -> list[Check]:
     """计划 §1.2 第 5 步。任一项失败都不该进下一步；online 项恰好调一次 ad_auth_shops。"""
@@ -955,7 +965,7 @@ def doctor(
     checks.append(judge_code_owner(_stat_or_none(VENV_PYTHON), VENV_PYTHON))
     if cfg is not None:
         checks.append(judge_registration(registration_json(cfg.sfw_bearer, port=port)))
-    checks.append(judge_port(probe_port(port), port))
+    checks.append(judge_port(probe_port(port), port, daemon_registered=daemon_registered))
     if online:
         try:
             rows = _shop_rows(config_path, expect_uid=expect_uid, client_factory=client_factory)

@@ -392,8 +392,9 @@ def test_an_empty_run_says_which_reason_it_was(tmp_path: Path) -> None:
     assert text.split("\n\n")[-1] == (
         f"门槛：统计 2026-08-18 到 {WINDOW_LAST_DAY}（最近 3 天不计入）；"
         "花费 ≥ 20.00 USD、3000 JPY（按店币种）；点击 ≥ 25。"
-        "有一些数据读不懂、已经跳过：上面说的「没有要否定的词」，只是说读得懂的那部分里没有。"
-    ), "一家店都没有 CSV 时，末尾不出现「把 CSV 交给管理员」那句"
+        "有一些数据读不懂、已经跳过：上面每家店的结论只覆盖读得懂的那部分。"
+        "\n本工具不改任何广告。"
+    ), "一家店都没有 CSV 时，末尾不出现「把 CSV 交给管理员」那句，但「不改任何广告」要在"
     # 只有判定跑到了头的三家店有报表；谁都没有 CSV。
     assert sorted(p.name.split("-")[1] for p in export_dir.iterdir()) == [
         "ASIN店",
@@ -611,7 +612,7 @@ def test_time_budget_reports_stores_not_reached(tmp_path: Path) -> None:
     text = summarize(runs, cfg)
     assert "**店03**：本轮没轮到（时间不够）；敲 /new 回车，再敲 /fd 回车回车。" in text
     assert text.endswith(
-        "有文件的店：把 CSV 交给管理员，他在领星「否定词」里加上才算数；本工具不改任何广告。"
+        "本工具不改任何广告。有文件的店：把 CSV 交给管理员，他在领星「否定词」里加上才算数。"
     ), "有 CSV 就要告诉孩子交给谁——整条链上此前唯一没写的一环"
     assert "[否定词-店01-" in text and "[否定词-店02-" in text and "店03-" not in text
     assert source.read_call_count == 2, "没轮到的店一次数都不取"

@@ -39,6 +39,7 @@ from ads_control_plane.sfw.config import (
     render_config_template,
 )
 from ads_control_plane.sfw.installer import (
+    LOG_PATH,
     REGISTRATION_KEYS,
     HostState,
     InstallerError,
@@ -729,7 +730,7 @@ def test_doctor_checks_are_pure_and_name_each_failure_in_chinese() -> None:
         judge_code_owner(_stat(st.S_IFREG | 0o755, 231), Path("/x/venv/bin/python")),
         judge_code_owner(_stat(st.S_IFREG | 0o777, 0), Path("/x/venv/bin/python")),
         judge_registration({**registration_json(BEARER), "env": {}}),
-        judge_port("other", 8790),
+        judge_port("other", 8790, daemon_registered=False),
         judge_directory({"1000000000000002"}, parse_config(VALID_CONFIG).stores),
     ]
     for name, passed, detail in failing:
@@ -742,8 +743,8 @@ def test_doctor_checks_are_pure_and_name_each_failure_in_chinese() -> None:
         judge_export_dir(_stat(st.S_IFDIR | 0o755, 231), 231, 501),
         judge_code_owner(_stat(st.S_IFREG | 0o755, 0), Path("/x/venv/bin/python")),
         judge_registration(registration_json(BEARER)),
-        judge_port("free", 8790),
-        judge_port("ours", 8790),
+        judge_port("free", 8790, daemon_registered=False),
+        judge_port("ours", 8790, daemon_registered=True),
         judge_directory(
             {"1000000000000001", "1000000000000002"}, parse_config(VALID_CONFIG).stores
         ),
@@ -766,6 +767,7 @@ def test_doctor_on_a_private_temp_config_passes_and_calls_the_directory_once(
         child_uid=None,
         port=port,
         online=True,
+        daemon_registered=False,
         client_factory=FakeClient,
     )
     assert [(name, passed) for name, passed, _ in checks] == [
@@ -800,10 +802,16 @@ def test_doctor_reports_a_busy_port_and_a_failed_directory_call(
             child_uid=None,
             port=port,
             online=True,
+            daemon_registered=False,
             client_factory=FakeClient,
         )
         offline = doctor(
-            private_config, expect_uid=os.getuid(), child_uid=None, port=port, online=False
+            private_config,
+            expect_uid=os.getuid(),
+            child_uid=None,
+            port=port,
+            online=False,
+            daemon_registered=False,
         )
     verdicts = {name: (passed, detail) for name, passed, detail in checks}
     passed, detail = verdicts[f"端口 {port}"]
@@ -820,7 +828,12 @@ def test_doctor_fails_when_the_interpreter_it_would_launch_is_missing(
 ) -> None:
     monkeypatch.setattr(installer, "VENV_PYTHON", tmp_path / "venv" / "bin" / "python")
     checks = doctor(
-        private_config, expect_uid=os.getuid(), child_uid=None, port=_free_port(), online=False
+        private_config,
+        expect_uid=os.getuid(),
+        child_uid=None,
+        port=_free_port(),
+        online=False,
+        daemon_registered=False,
     )
     verdicts = {name: (passed, detail) for name, passed, detail in checks}
     passed, detail = verdicts["代码属 root"]
@@ -843,7 +856,12 @@ def test_doctor_fails_when_the_run_log_directory_cannot_be_written(
     os.chmod(path, 0o600)
     try:
         checks = doctor(
-            path, expect_uid=os.getuid(), child_uid=None, port=_free_port(), online=False
+            path,
+            expect_uid=os.getuid(),
+            child_uid=None,
+            port=_free_port(),
+            online=False,
+            daemon_registered=False,
         )
     finally:
         os.chmod(locked, 0o755)
@@ -864,6 +882,7 @@ def test_doctor_on_an_open_config_fails_the_file_checks_and_never_calls_lingxing
         child_uid=None,
         port=_free_port(),
         online=True,
+        daemon_registered=False,
         client_factory=FakeClient,
     )
     verdicts = {name: (passed, detail) for name, passed, detail in checks}
@@ -1025,3 +1044,19 @@ def test_shops_and_doctor_commands_use_the_service_uid_and_exit_codes(
     assert cli.main(argv) == 1
     out = capsys.readouterr().out
     assert "[失败] 配置文件私有" in out and "先修好再 start" in out
+
+
+def test_a_registered_daemon_with_nobody_listening_is_a_failure_not_a_green_check() -> None:
+    """服务死了的时候，doctor 必须说出来——否则管理员拿到一份全绿报告，下一步无处可去。
+
+    2026-09-20 真事：助手说「工具没连上」，README 让管理员跑 doctor；服务已经死了，
+    8790 空着，端口那项按「空闲，可以 start」判通过，十项全绿、退出码 0。
+    「空闲」对 start 之前的体检是对的，对 start 之后就是假绿——差别只在 daemon 登记了没有。
+    """
+    name, passed, detail = judge_port("free", 8790, daemon_registered=True)
+    assert passed is False
+    assert "没起来" in detail and "ads-pack start" in detail
+    assert str(LOG_PATH) in detail, "报了故障就得给出下一步看哪里"
+    assert judge_port("free", 8790, daemon_registered=False)[1] is True, (
+        "还没 start 的时候，端口空闲就该是通过——这条路不能被上面那条压掉"
+    )

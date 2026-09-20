@@ -378,8 +378,9 @@ def _threshold_line(runs: Sequence[StoreRun], cfg: PackConfig) -> str:
         f"点击 ≥ {cfg.thresholds.min_clicks}。"
     )
     if unjudged or unattributable:
-        line += "有一些数据读不懂、已经跳过：上面说的「没有要否定的词」，"
-        line += "只是说读得懂的那部分里没有。"
+        # 不再引「上面说的『没有要否定的词』」：那句话只在部分结局里出现，别的结局下
+        # 孩子会去上面找一句不存在的话，于是唯一那条「结论可能不全」的警告落空。
+        line += "有一些数据读不懂、已经跳过：上面每家店的结论只覆盖读得懂的那部分。"
     return line
 
 
@@ -396,9 +397,12 @@ def summarize(runs: Sequence[StoreRun], cfg: PackConfig) -> str:
             lines.append(_files_line(run))
         blocks.append("\n".join(lines))
     tail = _threshold_line(runs, cfg)
+    # 无条件：孩子刚在弹窗上点了「批准」，这一句是他判断广告有没有被改的唯一依据。
+    # 此前它挂在「有 CSV」这个条件下，于是全是 ASIN、没有要否定的词、取数全失败这三种
+    # 结局里，一个刚按完批准的 10 岁孩子读不到任何一句说「我没动你的广告」。
+    tail += "\n本工具不改任何广告。"
     if any(run.csv_path is not None for run in runs):
-        tail += "\n有文件的店：把 CSV 交给管理员，他在领星「否定词」里加上才算数；"
-        tail += "本工具不改任何广告。"
+        tail += "有文件的店：把 CSV 交给管理员，他在领星「否定词」里加上才算数。"
     return tail if not blocks else "\n\n".join([*blocks, tail])
 
 

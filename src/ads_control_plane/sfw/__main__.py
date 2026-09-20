@@ -134,6 +134,7 @@ def _doctor(args: argparse.Namespace) -> int:
         child_uid=child_uid,
         port=args.port,
         online=not args.offline,
+        daemon_registered=installer.daemon_loaded(),
     )
     for name, passed, detail in checks:
         print(f"[{'通过' if passed else '失败'}] {name}：{detail}")
