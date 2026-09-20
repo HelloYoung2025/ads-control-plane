@@ -13,11 +13,10 @@
 版本固定的领星 Tool Schema / Response Fixture，不得凭工具名称或旧聊天记忆臆造字段」。
 对照今天的事实，其中两条已经不成立：
 
-- **Schema 已录，不是臆造**。2026-08-28 经网关 `search` 工具实测录得 10 份工具 schema
-  （`docs/evidence/lx-schema-*.json`），含本目录用到的
-  `ad_campaign_search_term_report-20260828.json`。同一批实测让 DEC-009（快照冲突）
-  判定关闭，快照在 `docs/evidence/lx_mcp_snapshot_20260828T085423Z.json`。
-  README 此前把这项已完成的工作仍列为待办。
+- **Schema 已录，不是臆造**。2026-08-28 经网关 `search` 工具实测录得 10 份工具 schema，
+  含本目录用到的搜索词报表；同一批实测让 DEC-009（快照冲突）判定关闭。
+  README 此前把这项已完成的工作仍列为待办。录得的 schema 与目录快照是领星的私有接口
+  文档，2026-09-20 建公开远端时从仓库移除，只留在 Owner 本机。
 - **「本目录保持空实现」与仓库现状不符**。`adapters/lx_read.py` 早已带着实测 schema
   跑 9 个只读工具，且有结构性防写（`READ_TOOL_ALLOWLIST` 之外的 toolId 在任何网络调用
   之前即被拒）。
