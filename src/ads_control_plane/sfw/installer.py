@@ -863,14 +863,30 @@ def judge_port(state: PortState, port: int) -> Check:
         return (name, True, "空闲，可以 start")
     if state == "ours":
         return (name, True, "已由本服务占用（GET /mcp 得 401），start 之后就该这样")
-    return (name, False, "被别的程序占用（GET /mcp 没得到 401）：换端口或先停掉它")
+    return (
+        name,
+        False,
+        f"被别的程序占用（GET /mcp 没得到 401）：用 sudo lsof -nP -iTCP:{port} -sTCP:LISTEN "
+        "查是谁并停掉它；真要换端口得改 /Library/LaunchDaemons/local.ads-pack.plist 里的 "
+        "--port，再 stop/start，并用 print-registration --port 重新登记",
+    )
 
 
 def judge_directory(profile_ids: Collection[str], stores: Sequence[StoreConfig]) -> Check:
     name = "领星名录"
-    missing = [s.nickname for s in stores if s.profile_id not in profile_ids]
+    missing = [
+        f"{s.nickname}（profile_id {s.profile_id}）"
+        for s in stores
+        if s.profile_id not in profile_ids
+    ]
     if missing:
-        return (name, False, f"名录里有 {len(profile_ids)} 家店，但配置里的 {missing} 不在其中")
+        return (
+            name,
+            False,
+            f"名录里有 {len(profile_ids)} 家店，配置里这 {len(missing)} 家不在其中："
+            + "、".join(missing)
+            + "；用 sudo ads-pack shops 重新对一遍",
+        )
     return (
         name,
         True,
@@ -884,7 +900,7 @@ def _describe_config(cfg: PackConfig) -> str:
     t = cfg.thresholds
     return (
         f"{len(cfg.stores)} 家店（{stores}）；花费 ≥ {spend}；点击 ≥ {t.min_clicks}；"
-        f"回看 {t.lookback_days} 天；数据最多 {t.max_data_staleness_hours} 小时旧"
+        f"回看 {t.lookback_days} 天"
     )
 
 

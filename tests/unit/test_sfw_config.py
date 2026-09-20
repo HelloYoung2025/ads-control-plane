@@ -51,7 +51,7 @@ connection_id = "{CONN}"
 sfw_bearer = "{BEARER}"
 export_dir = "/Users/Shared/ads-pack/导出"
 run_log_path = "/Users/Shared/ads-pack/运行记录.csv"
-time_budget_seconds = 3300
+time_budget_seconds = 2700
 
 [lingxing]
 url = "http://lx.invalid/mcp"
@@ -139,7 +139,7 @@ def test_template_is_valid_toml_with_the_documented_defaults() -> None:
     assert document["sfw_bearer"] == BEARER
     assert document["export_dir"] == str(DEFAULT_EXPORT_DIR)
     assert document["run_log_path"] == str(DEFAULT_RUN_LOG)
-    assert document["time_budget_seconds"] == 3300
+    assert document["time_budget_seconds"] == 2700
     assert document["lingxing"] == {"url": "", "key": ""}
     assert "stores" not in document, "店铺表只能是注释示例：安装时还不知道有哪些店"
     assert document["thresholds"] == {
@@ -172,7 +172,7 @@ def test_template_becomes_a_working_config_once_stores_and_lingxing_are_filled()
     assert cfg.sfw_bearer == BEARER
     assert cfg.export_dir == DEFAULT_EXPORT_DIR
     assert cfg.run_log_path == DEFAULT_RUN_LOG
-    assert cfg.time_budget_seconds == 3300
+    assert cfg.time_budget_seconds == 2700
     assert (cfg.lingxing_url, cfg.lingxing_key) == ("http://lx.invalid/mcp", "sk-test-key")
     assert cfg.stores == (
         StoreConfig(
@@ -388,19 +388,21 @@ def test_pack_for_never_touches_float() -> None:
 # ------------------------------------------------------------------ 顶层字段
 
 
-@pytest.mark.parametrize("budget", [59, 3601, 0, -1])
+@pytest.mark.parametrize("budget", [59, 3001, 3600, 0, -1])
 def test_time_budget_out_of_range_is_refused(budget: int) -> None:
-    text = VALID.replace("time_budget_seconds = 3300", f"time_budget_seconds = {budget}")
+    text = VALID.replace("time_budget_seconds = 2700", f"time_budget_seconds = {budget}")
     exc = _refused(text, "TIME_BUDGET_OUT_OF_RANGE")
     assert str(budget) in str(exc)
 
 
-def test_time_budget_defaults_to_3300_and_accepts_both_ends() -> None:
+def test_time_budget_defaults_below_the_sfw_tool_timeout_and_accepts_both_ends() -> None:
+    # 上限 3000 < SFW 登记的 tool_timeout_sec(3600)：预算在每家店开跑前才检查，
+    # 最后一家可以整个跑出预算之外，越过 3600 孩子收到的就是一句假的「工具没连上」。
     assert (
-        parse_config(VALID.replace("time_budget_seconds = 3300\n", "")).time_budget_seconds == 3300
+        parse_config(VALID.replace("time_budget_seconds = 2700\n", "")).time_budget_seconds == 2700
     )
-    for budget in (60, 3600):
-        text = VALID.replace("time_budget_seconds = 3300", f"time_budget_seconds = {budget}")
+    for budget in (60, 3000):
+        text = VALID.replace("time_budget_seconds = 2700", f"time_budget_seconds = {budget}")
         assert parse_config(text).time_budget_seconds == budget
 
 

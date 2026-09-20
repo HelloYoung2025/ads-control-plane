@@ -10,9 +10,11 @@
   「店铺表配错」于是不会和「名录查不到」长成一个样。
 - **单店失败不中断**：一家店取数失败只让那一家的那一行说「取数失败（<code>）」，其余店照常。
   此前一个店抛 ToolDenied 整次调用就没了，人拿不到别家已经算好的文件。
-- **时间预算**：SFW 登记的工具超时是 3600 s，组件内预算缺省 3300 s；逐店顺序跑、预算用尽
-  即停，已跑完的店文件已落盘。没轮到的店如实说「本轮没轮到」，不静默漏掉——漏掉的那家
-  在回答里连一行都没有，人会把它读成「这家店没事」。
+- **时间预算**：SFW 登记的工具超时是 3600 s，组件内预算缺省 2700 s、上限 3000 s；逐店顺序跑、
+  预算用尽即停，已跑完的店文件已落盘。预算是在每家店**开跑前**检查的，最后一家可以整个跑出
+  预算之外，所以上限必须留出余量——越过 3600 s 那一刻孩子收到的是一句假的「工具没连上」，
+  整轮白跑。没轮到的店如实说「本轮没轮到」，不静默漏掉——漏掉的那家在回答里连一行都没有，
+  人会把它读成「这家店没事」。
 
 给人看的话（`summarize`）只印计数、链接、ASIN 形状的词与门槛；候选关键词是站外自由文本
 （AX-15），永不进返回文本，只进文件。
@@ -20,6 +22,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 import time
 import uuid
@@ -52,7 +55,12 @@ from ads_control_plane.strategies.ports import (
 
 #: 一次运行最多冻结多少个候选，超出按花费从高到低截断（搬自同日删除的即席上限）。
 #: 截断这件事本身写进报表与运行记录，不藏：人看到 200 条会以为「这就是全部浪费」。
+logger = logging.getLogger("ads_control_plane.sfw")
+
 MAX_CANDIDATES_PER_RUN = 200
+
+#: 返回文本里最多列几个 ASIN：一家店几十个时，那一行词表会把整段回答淹掉。
+MAX_ASIN_TERMS_IN_TEXT = 5
 
 #: 取数缓存时长（秒），与 SFW 登记的 tool_timeout_sec 相同。缓存住在数据源实例里，
 #: 所以数据源要跨调用复用（见 server.build_server）——一小时内再敲一次 /fd 不再拉领星。
@@ -167,6 +175,7 @@ def run_store(
     try:
         fetch = source.fetch_search_term_performance(store.profile_id, pack.lookback_days, now)
     except SearchTermSourceError as exc:
+        logger.error("%s 取数失败 %s：%s", store.nickname, exc.code, exc)
         return StoreRun(
             store=store,
             outcome=RunOutcome.SOURCE_ERROR,
@@ -177,6 +186,7 @@ def run_store(
     try:
         result = generate_negation_candidates(fetch.records, pack, now, id_factory)
     except CandidateSetError as exc:
+        logger.error("%s 数据不合规 %s：%s", store.nickname, exc.code, exc)
         return StoreRun(
             store=store,
             outcome=RunOutcome.DATA_REJECTED,
@@ -197,7 +207,12 @@ def run_store(
     truncated_from: int | None = None
     if len(result.candidates) > MAX_CANDIDATES_PER_RUN:
         truncated_from = len(result.candidates)
-        kept = sorted(result.candidates, key=lambda c: c.evidence.spend.amount, reverse=True)
+        # 花费并列时按外部 ID + 词文本定序：上游行序不稳定，靠它决定谁进前 200
+        # 会让同一批数据两次跑出不同的内容指纹，而指纹进文件名。
+        kept = sorted(
+            result.candidates,
+            key=lambda c: (-c.evidence.spend.amount, c.scope.entity_external_id, c.search_term),
+        )
         result = result.model_copy(update={"candidates": tuple(kept[:MAX_CANDIDATES_PER_RUN])})
     frozen = NegationCandidateSet(
         set_id=id_factory(),
@@ -268,13 +283,19 @@ def _asin_terms(result: NegationRunResult) -> list[str]:
 
 
 def _asin_tail(result: NegationRunResult) -> str:
-    """「…单独处理」后面跟什么：形状像 ASIN 的原样列出，不像的只给个数、指向报表。"""
+    """「…单独处理」后面跟什么：形状像 ASIN 的列几个，多了只给数、指向报表。"""
     terms = _asin_terms(result)
     shaped = [t for t in terms if ASIN_SHAPE.fullmatch(t.upper())]
     unshaped = len(terms) - len(shaped)
-    tail = "：" + "、".join(shaped) if shaped else ""
+    shown = shaped[:MAX_ASIN_TERMS_IN_TEXT]
+    tail = "：" + "、".join(shown) if shown else ""
+    more = (
+        f"（共 {len(shaped)} 个，只列了 {len(shown)} 个，其余见报表）"
+        if len(shaped) > len(shown)
+        else ""
+    )
     note = f"（其中 {unshaped} 个的写法不像 ASIN，见报表）" if unshaped else ""
-    return f"{tail}{note}。"
+    return f"{tail}{more}{note}。"
 
 
 def _asin_sentence(result: NegationRunResult) -> str:
@@ -299,12 +320,13 @@ def _first_line(run: StoreRun) -> str:
     head = f"**{run.store.nickname}**："
     outcome = run.outcome
     if outcome is RunOutcome.NOT_RUN:
-        return head + "本轮没轮到（时间不够），再敲一次 /fd。"
+        return head + "本轮没轮到（时间不够）；敲 /new 回车，再敲 /fd 回车回车。"
     if outcome is RunOutcome.NO_DATA_SOURCE:
         return head + "这家店没接上数据源，找管理员。"
     if outcome is RunOutcome.SOURCE_ERROR:
         return head + (
-            f"取数失败（{run.error_code}），文件没有更新；1 分钟后再敲一次 /fd，还不行找管理员。"
+            f"取数失败（{run.error_code}），文件没有更新；等 1 分钟，"
+            "敲 /new 回车，再敲 /fd 回车回车，还不行找管理员。"
         )
     if outcome is RunOutcome.DATA_REJECTED:
         return head + f"数据不合规（{run.error_code}），文件没有更新，找管理员。"
@@ -323,7 +345,7 @@ def _first_line(run: StoreRun) -> str:
     if outcome is RunOutcome.ALL_ABSTAINED:
         return head + (
             f"数据太旧（超过 {pack.max_data_staleness_hours} 小时），这次没法判断；"
-            "晚点再敲一次 /fd。"
+            "晚点敲 /new 回车，再敲 /fd 回车回车。"
         )
     looked = f"看了 {result.evaluated_count} 组（去重 {result.distinct_search_terms} 个词），"
     if outcome is RunOutcome.NO_CANDIDATES:
@@ -350,12 +372,15 @@ def _threshold_line(runs: Sequence[StoreRun], cfg: PackConfig) -> str:
     spend = "、".join(f"{cfg.thresholds.min_spend[c]} {c}" for c in currencies)
     unjudged = sum(len(run.fetch.unjudged_groups) for run in runs if run.fetch is not None)
     unattributable = sum(run.fetch.unattributable_rows for run in runs if run.fetch is not None)
-    return (
+    line = (
         f"门槛：统计 {start.date().isoformat()} 到 {last_day}"
         f"（最近 {ATTRIBUTION_LAG_DAYS} 天不计入）；花费 ≥ {spend}（按店币种）；"
         f"点击 ≥ {cfg.thresholds.min_clicks}。"
-        f"未判断 {unjudged} 组、无法归属 {unattributable} 行。"
     )
+    if unjudged or unattributable:
+        line += "有一些数据读不懂、已经跳过：上面说的「没有要否定的词」，"
+        line += "只是说读得懂的那部分里没有。"
+    return line
 
 
 def summarize(runs: Sequence[StoreRun], cfg: PackConfig) -> str:
@@ -370,7 +395,11 @@ def summarize(runs: Sequence[StoreRun], cfg: PackConfig) -> str:
         if run.html_path is not None:
             lines.append(_files_line(run))
         blocks.append("\n".join(lines))
-    return "\n\n".join([*blocks, _threshold_line(runs, cfg)])
+    tail = _threshold_line(runs, cfg)
+    if any(run.csv_path is not None for run in runs):
+        tail += "\n有文件的店：把 CSV 交给管理员，他在领星「否定投放」里加上才算数；"
+        tail += "本工具不改任何广告。"
+    return tail if not blocks else "\n\n".join([*blocks, tail])
 
 
 def run_once(

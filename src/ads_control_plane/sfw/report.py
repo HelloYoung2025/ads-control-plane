@@ -157,7 +157,7 @@ def _day_span(start: datetime, end: datetime) -> str:
 
 
 def _moment(value: datetime) -> str:
-    return value.astimezone(UTC).strftime("%Y-%m-%d %H:%M UTC")
+    return value.astimezone().isoformat(timespec="minutes")
 
 
 def _name_cell(name: str | None, external_id: str) -> str:
@@ -206,7 +206,7 @@ def render_report_html(run: StoreRun) -> str:
         + _e(_day_span(run.window[0], run.window[1]))
         + f"（最近 {ATTRIBUTION_LAG_DAYS} 天不计入）；门槛：花费 ≥ "
         + _e(f"{pack.min_spend.amount} {pack.min_spend.currency}")
-        + f"、点击 ≥ {pack.min_clicks}、数据最多 {pack.max_data_staleness_hours} 小时旧；"
+        + f"、点击 ≥ {pack.min_clicks}；"
         f"回看 {pack.lookback_days} 天。</p>",
         f"<p class='muted'>内容指纹 <code>{_e(fingerprint)}</code>（文件名里是前 8 位）"
         + (
@@ -219,7 +219,8 @@ def render_report_html(run: StoreRun) -> str:
     if run.truncated_from is not None:
         parts.append(
             f"<p class='note'>本次命中 {run.truncated_from} 个候选，这里与 CSV 只列了花费最高的 "
-            f"{len(candidates)} 个；其余的这次没有列出来，处理完这批再敲一次 /fd。</p>"
+            f"{len(candidates)} 个；其余的这次没有列出来，处理完这批，"
+            "敲 /new 回车，再敲 /fd 回车回车。</p>"
         )
     if candidates:
         parts.append(f"<h2>要否定的词（{len(candidates)}）</h2>")

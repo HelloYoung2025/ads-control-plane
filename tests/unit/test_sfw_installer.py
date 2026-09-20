@@ -806,10 +806,10 @@ def test_doctor_reports_a_busy_port_and_a_failed_directory_call(
             private_config, expect_uid=os.getuid(), child_uid=None, port=port, online=False
         )
     verdicts = {name: (passed, detail) for name, passed, detail in checks}
-    assert verdicts[f"端口 {port}"] == (
-        False,
-        "被别的程序占用（GET /mcp 没得到 401）：换端口或先停掉它",
-    )
+    passed, detail = verdicts[f"端口 {port}"]
+    assert passed is False
+    assert f"sudo lsof -nP -iTCP:{port} -sTCP:LISTEN" in detail, "要给出查是谁占了的命令"
+    assert "local.ads-pack.plist" in detail, "「换端口」不能是句悬空的话：端口写死在 plist 里"
     assert verdicts["领星名录"] == (False, "取数失败（LX_TRANSPORT_ERROR）：timed out")
     assert [name for name, _, _ in offline][-1] == f"端口 {port}"
     assert len(FakeClient.calls) == 1, "离线体检一次名录都不查"

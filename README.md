@@ -12,17 +12,17 @@ SFW 电商 Pack 里的**否定词组件**：一个只读工具 `find_wasted_sear
 4. 只会弹一次窗：用鼠标点「批准」（别按回车、别按 Esc）。同一次对话弹第二个窗，一律点「拒绝」，找管理员。
 5. 读回答：每家店两行，点蓝字链接看报表、拿 CSV；桌面「否定词导出」文件夹里是同一份文件。
 
-一家店通常半分钟内（2026-08-30 实测 30 天窗口 27.6 秒）；店多时最长 55 分钟（时间预算），等着就行。
+一家店通常半分钟内（2026-08-30 实测 30 天窗口 27.6 秒）；店多时最长 45 分钟（时间预算），等着就行。
 
 ## 管理员一次性安装（10 步）
 
-1. 仓库目录里 `uv build --wheel`，得到 `dist/ads_control_plane-*.whl`。
+1. 仓库目录里 `uv sync --frozen && uv build --wheel`（sync 建出第 2 步要用的 `.venv`），得到 `dist/ads_control_plane-*.whl`。
 2. `sudo <仓库>/.venv/bin/python -m ads_control_plane.sfw install --wheel dist/<whl> --child-user <孩子的登录名>`：建系统用户 `_adspack`，把组件装进 `/Library/Application Support/ads-pack/`，写配置模板，建 `/Users/Shared/ads-pack/导出/`、LaunchDaemon、孩子的 `~/否定词/AGENTS.md`、`~/.codex/prompts/fd.md` 和桌面「否定词导出」链接，最后打印第 7 步要粘的 JSON。不启动服务。
-3. `sudo -e "/Library/Application Support/ads-pack/config.toml"`：填 `[lingxing]` 的 `url` 与 `key`。密钥只在这一处（文件属 `_adspack`、0600，孩子的账号读不到）。
+3. `sudo -e "/Library/Application Support/ads-pack/config.toml"`：填 `[lingxing]` 的 `url` 与 `key`。`key` 在领星 ERP 后台【业务配置 → 开放接口 → MCP】里生成，不是开放平台的 appId/appSecret；它继承该账号的店铺权限。密钥只在这一处（文件属 `_adspack`、0600，孩子的账号读不到）。
 4. `sudo ads-pack shops`：列出可选店铺，打印可粘贴的 `[[stores]]` 段；粘进配置，给每家店起个昵称（不含空格），按币种填 `[thresholds.min_spend]`。
 5. `sudo ads-pack doctor`：任一项不过，不进下一步。
 6. `sudo ads-pack start`。日志在 `/Library/Application Support/ads-pack/logs/ads-pack.log`。
-7. SFW 右栏「MCP」→「添加服务器」→「高级配置 · 本地命令 / JSON」→ 粘第 2 步打印的 JSON（`sudo ads-pack print-registration` 可再打一次）→「保存配置」。行状态应为「已连接」。
+7. **切到孩子的 macOS 账号**（苹果菜单 → 快速用户切换，用第 2 步 `--child-user` 那个登录名）：第 7–10 步都在孩子的 SFW 里做，第 1–6 步是管理员账号的终端。SFW 的 MCP 登记按登录账号存，装好的 `~/否定词`、`/fd` 与桌面链接也都在他家里。接着在 SFW 右栏「MCP」→「添加服务器」→「高级配置 · 本地命令 / JSON」→ 粘第 2 步打印的 JSON（`sudo ads-pack print-registration` 可再打一次）→「保存配置」。行状态应为「已连接」。
 8. SFW 项目芯片 →「使用现有文件夹」→ 选 `~/否定词` →「打开」。
 9. 重启一次 SFW（斜杠命令只在启动时加载），然后自己照上面 5 步跑一遍。
 10. 培训三句话：① 敲 `/new` 回车，再敲 `/fd` 回车回车；② 只会弹一次窗，用鼠标点「批准」，弹第二次就点「拒绝」叫我；③ 文件在回答里的蓝字链接和桌面「否定词导出」里，报表点开看。
@@ -45,7 +45,8 @@ SFW 电商 Pack 里的**否定词组件**：一个只读工具 `find_wasted_sear
 ## 出错了
 
 - 助手说「工具没连上」：SFW 右栏「MCP」里点「重新连接」；还不行就 `sudo ads-pack doctor`。
-- 助手说「配置错误」「取数失败」：`sudo ads-pack doctor` 会指出是哪一项。
+- 助手说「配置错误：…」：`sudo ads-pack doctor` 会指出是哪一项。
+- 助手说「取数失败」「数据不合规」：doctor 查不到这类（它只看配置、权限、端口与名录），看日志里那一行带店名的 ERROR。
 - 再看日志：`/Library/Application Support/ads-pack/logs/ads-pack.log`。
 
 开发门禁：`uv run ruff format src tests && uv run ruff check src tests && uv run mypy && uv run pytest -q`。安全边界见 [SECURITY.md](SECURITY.md)。

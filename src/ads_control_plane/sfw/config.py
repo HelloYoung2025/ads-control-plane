@@ -42,7 +42,7 @@ DEFAULT_EXPORT_DIR = Path("/Users/Shared/ads-pack/导出")
 DEFAULT_RUN_LOG = Path("/Users/Shared/ads-pack/运行记录.csv")
 DEFAULT_PORT = 8790
 SERVICE_USER = "_adspack"
-DEFAULT_TIME_BUDGET_SECONDS = 3300
+DEFAULT_TIME_BUDGET_SECONDS = 2700
 
 #: 店铺昵称会进文件名与 Markdown 链接 `[名字](/路径)`，所以不含空格、不含路径分隔符；
 #: 首字符不能是「-」：运行记录.csv 里以 - 开头的格会被 Excel 当公式，文件名会被 shell 当选项。
@@ -357,10 +357,12 @@ def parse_config(text: str) -> PackConfig:
             "EXPORT_DIR_UNLINKABLE",
             f"export_dir 不能含空格或括号（链接语法 [名字](/路径) 遇到它们会断）：{raw.export_dir}",
         )
-    if not 60 <= raw.time_budget_seconds <= 3600:
+    if not 60 <= raw.time_budget_seconds <= 3000:
         raise ConfigError(
             "TIME_BUDGET_OUT_OF_RANGE",
-            f"time_budget_seconds 要在 60 到 3600 之间，现在是 {raw.time_budget_seconds}",
+            "time_budget_seconds 要在 60 到 3000 之间（SFW 登记的工具超时是 3600 秒，"
+            "而预算在每家店开跑前才检查，最后一家可以整个跑出预算之外，要留余量），"
+            f"现在是 {raw.time_budget_seconds}",
         )
     url, key = _lingxing_credentials(raw.lingxing)
     thresholds = _parse_thresholds(raw.thresholds)
@@ -450,10 +452,13 @@ sfw_bearer = "{sfw_bearer}"
 export_dir = "{export_dir}"
 run_log_path = "{run_log_path}"
 
-# 一次调用最多跑多少秒（60 到 3600）；没轮到的店下次再跑。
+# 一次调用最多跑多少秒（60 到 3000）；没轮到的店下次再跑。
 time_budget_seconds = {time_budget_seconds}
 
 # 领星网关：填好后 sudo ads-pack shops 能列出可选店铺。
+# url 填领星 MCP 的网关地址；key 填领星 ERP 后台【业务配置 → 开放接口 → MCP】里
+# 当前账号生成的鉴权密钥（不是开放平台的 appId/appSecret）。
+# 密钥继承该账号的店铺权限：第 4 步 shops 列出来的，就是这个账号能看到的店。
 [lingxing]
 url = ""
 key = ""

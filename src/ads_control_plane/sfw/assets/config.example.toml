@@ -12,10 +12,13 @@ sfw_bearer = "<安装时自动生成的口令，不要手改>"
 export_dir = "/Users/Shared/ads-pack/导出"
 run_log_path = "/Users/Shared/ads-pack/运行记录.csv"
 
-# 一次调用最多跑多少秒（60 到 3600）；没轮到的店下次再跑。
-time_budget_seconds = 3300
+# 一次调用最多跑多少秒（60 到 3000）；没轮到的店下次再跑。
+time_budget_seconds = 2700
 
 # 领星网关：填好后 sudo ads-pack shops 能列出可选店铺。
+# url 填领星 MCP 的网关地址；key 填领星 ERP 后台【业务配置 → 开放接口 → MCP】里
+# 当前账号生成的鉴权密钥（不是开放平台的 appId/appSecret）。
+# 密钥继承该账号的店铺权限：第 4 步 shops 列出来的，就是这个账号能看到的店。
 [lingxing]
 url = ""
 key = ""

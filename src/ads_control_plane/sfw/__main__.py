@@ -96,8 +96,11 @@ def _install(args: argparse.Namespace) -> int:
     print("粘进 SFW「MCP → 添加服务器 → 高级配置 · 本地命令 / JSON」的登记 JSON：")
     print(json.dumps(payload, ensure_ascii=False))
     print()
-    print("下一步：sudo -e 填 config.toml 的 [lingxing]；sudo ads-pack shops；填 [[stores]]；")
-    print("sudo ads-pack doctor 全过之后 sudo ads-pack start。")
+    print(f"下一步：sudo -e '{DEFAULT_CONFIG_PATH}' 填 [lingxing]；")
+    print("sudo ads-pack shops；把打印的 [[stores]] 段粘进配置；")
+    print("sudo ads-pack doctor 全过之后 sudo ads-pack start；")
+    print("再照 README「管理员一次性安装」第 7–10 步收尾——那几步要在孩子的账号里做，")
+    print("且必须重启一次 SFW，否则 /fd 不存在。")
     return 0
 
 
@@ -203,8 +206,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     try:
         return _HANDLERS[args.command](args)
-    except (InstallerError, ConfigError, LxReadError) as exc:
+    except (InstallerError, ConfigError) as exc:
         print(f"错误：{exc}", file=sys.stderr)
+        return 1
+    except LxReadError as exc:
+        detail = getattr(exc, "error_details", None)
+        print(
+            f"错误：领星取数失败（{exc.code}）：{exc}"
+            + (f"；网关原话：{detail}" if detail else "")
+            + f"；核对 [lingxing] 的 url 与 key（sudo -e '{DEFAULT_CONFIG_PATH}'），改完重跑。",
+            file=sys.stderr,
+        )
         return 1
     except subprocess.CalledProcessError as exc:
         print(

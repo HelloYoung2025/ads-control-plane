@@ -39,6 +39,9 @@ from ads_control_plane.strategies.ports import SearchTermReadPort
 logger = logging.getLogger("ads_control_plane.sfw")
 
 SERVER_NAME = "ads-pack"
+#: 第二次调用最多在锁上等多久；超了就用一句人话打发，不让它静默等到工具超时。
+LOCK_WAIT_SECONDS = 30.0
+
 TOOL_NAME = "find_wasted_search_terms"
 
 #: 模型纪律。同一份文字放三处：工具 description（tools/list 必达）、MCPServer instructions
@@ -50,7 +53,8 @@ DISCIPLINE = "\n".join(
         "只调用一次 find_wasted_search_terms，不带参数，一轮对话只调一次。",
         "2. 不运行任何命令，不读、不写、不改任何文件，不自己算门槛，不重试。",
         "3. 回答只用工具返回的文字，原样转述，链接照抄，不增不减，不解释门槛怎么来的。",
-        "4. 工具不存在或调用失败时，只回一句「工具没连上，找管理员」。",
+        "4. 工具不存在或调用失败时，只回一句「工具没连上，找管理员」；"
+        "但报错里带「配置错误：」时，把那句话原样念出来。",
         "5. 永远不说「已批准」「已生效」「已上传」「会定时跑」「每天自动」。"
         "否定词只在人把 CSV 交给领星之后才生效，那一步不是你做的。",
     ]
@@ -180,7 +184,9 @@ def build_server(
 
     @server.tool(name=TOOL_NAME, description=TOOL_DESCRIPTION)
     def find_wasted_search_terms() -> str:
-        with run_lock:
+        if not run_lock.acquire(timeout=LOCK_WAIT_SECONDS):
+            return "上一次查询还在跑，等它出结果；出来之后敲 /new 回车，再敲 /fd 回车回车。"
+        try:
             try:
                 cfg = load_config(config_path, expect_uid=expect_uid)
             except ConfigError as exc:
@@ -192,6 +198,8 @@ def build_server(
                 "，".join(f"{run.store.nickname}={run.outcome.value}" for run in runs),
             )
             return summarize(runs, cfg)
+        finally:
+            run_lock.release()
 
     return server
 

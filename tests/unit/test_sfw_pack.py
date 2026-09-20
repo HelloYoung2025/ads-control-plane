@@ -84,7 +84,7 @@ def config_text(
     tmp_path: Path,
     stores: list[Store] | None = None,
     *,
-    time_budget: int = 3300,
+    time_budget: int = 2700,
     min_spend: tuple[str, ...] = ('USD = "20.00"', 'JPY = "3000"'),
 ) -> str:
     blocks = "".join(
@@ -373,8 +373,8 @@ def test_an_empty_run_says_which_reason_it_was(tmp_path: Path) -> None:
         "无源店": "这家店没接上数据源，找管理员。",
         "坏行店": "取到了 7 行，但一行都读不出来（数据形状不对），找管理员。",
         "空店": "这段时间没有搜索词数据。",
-        "断网店": "取数失败（LX_TRANSPORT_ERROR），文件没有更新；1 分钟后再敲一次 /fd，"
-        "还不行找管理员。",
+        "断网店": "取数失败（LX_TRANSPORT_ERROR），文件没有更新；等 1 分钟，"
+        "敲 /new 回车，再敲 /fd 回车回车，还不行找管理员。",
         "错币店": "数据不合规（CURRENCY_MISMATCH），文件没有更新，找管理员。",
     }
     for nickname, sentence in one_liners.items():
@@ -382,7 +382,7 @@ def test_an_empty_run_says_which_reason_it_was(tmp_path: Path) -> None:
     with_report = {
         "ASIN店": "花了钱没出单的全是 ASIN（1 个），否定词挡不住，"
         "要去领星「否定投放」单独处理：b0demo0001。",
-        "旧店": "数据太旧（超过 24 小时），这次没法判断；晚点再敲一次 /fd。",
+        "旧店": "数据太旧（超过 24 小时），这次没法判断；晚点敲 /new 回车，再敲 /fd 回车回车。",
         "干净店": "看了 1 组（去重 1 个词），没有要否定的词。这不等于没有浪费：门槛以下的词不算。",
     }
     for nickname, sentence in with_report.items():
@@ -391,8 +391,9 @@ def test_an_empty_run_says_which_reason_it_was(tmp_path: Path) -> None:
         _assert_report_link_only(second, nickname, export_dir)
     assert text.split("\n\n")[-1] == (
         f"门槛：统计 2026-08-18 到 {WINDOW_LAST_DAY}（最近 3 天不计入）；"
-        "花费 ≥ 20.00 USD、3000 JPY（按店币种）；点击 ≥ 25。未判断 0 组、无法归属 7 行。"
-    )
+        "花费 ≥ 20.00 USD、3000 JPY（按店币种）；点击 ≥ 25。"
+        "有一些数据读不懂、已经跳过：上面说的「没有要否定的词」，只是说读得懂的那部分里没有。"
+    ), "一家店都没有 CSV 时，末尾不出现「把 CSV 交给管理员」那句"
     # 只有判定跑到了头的三家店有报表；谁都没有 CSV。
     assert sorted(p.name.split("-")[1] for p in export_dir.iterdir()) == [
         "ASIN店",
@@ -484,8 +485,8 @@ def test_source_error_for_one_store_does_not_hide_the_others(tmp_path: Path) -> 
     assert runs[1].error_code == "LX_GATEWAY_ERROR"
     assert "**美国店**：看了 1 组（去重 1 个词），要否定 1 个。\n文件：[否定词-美国店-" in text
     assert (
-        "**日本店**：取数失败（LX_GATEWAY_ERROR），文件没有更新；1 分钟后再敲一次 /fd，"
-        "还不行找管理员。"
+        "**日本店**：取数失败（LX_GATEWAY_ERROR），文件没有更新；等 1 分钟，"
+        "敲 /new 回车，再敲 /fd 回车回车，还不行找管理员。"
     ) in text
     assert not list(cfg.export_dir.glob("*日本店*"))
     assert [r[1:3] for r in _run_log_rows(cfg.run_log_path)[1:]] == [
@@ -608,7 +609,10 @@ def test_time_budget_reports_stores_not_reached(tmp_path: Path) -> None:
         RunOutcome.NOT_RUN,
     ]
     text = summarize(runs, cfg)
-    assert "**店03**：本轮没轮到（时间不够），再敲一次 /fd。" in text
+    assert "**店03**：本轮没轮到（时间不够）；敲 /new 回车，再敲 /fd 回车回车。" in text
+    assert text.endswith(
+        "有文件的店：把 CSV 交给管理员，他在领星「否定投放」里加上才算数；本工具不改任何广告。"
+    ), "有 CSV 就要告诉孩子交给谁——整条链上此前唯一没写的一环"
     assert "[否定词-店01-" in text and "[否定词-店02-" in text and "店03-" not in text
     assert source.read_call_count == 2, "没轮到的店一次数都不取"
     assert [r[1:3] for r in _run_log_rows(cfg.run_log_path)[1:]] == [
