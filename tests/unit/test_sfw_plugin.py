@@ -26,6 +26,7 @@ PLUGIN_DIR = REPO / "plugins" / "amazon-ads"
 MANIFEST = json.loads((PLUGIN_DIR / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
 MCP = json.loads((PLUGIN_DIR / ".mcp.json").read_text(encoding="utf-8"))
 MARKET = json.loads((REPO / ".agents" / "plugins" / "marketplace.json").read_text(encoding="utf-8"))
+README = (REPO / "README.md").read_text(encoding="utf-8")
 
 
 # ------------------------------------------------------------------ 入口
@@ -121,3 +122,26 @@ def test_skill_frontmatter_says_when_to_use_it() -> None:
     assert re.search(r"^name:\s*wasted-search-terms$", head, re.M)
     assert re.search(r"^description:\s*\S", head, re.M)
     assert "否定词" in head and "find_wasted_search_terms" in head
+
+
+def test_the_readme_installs_the_same_version_from_the_same_marketplace() -> None:
+    """README 里那几行命令是别人唯一会照着敲的东西，得跟清单钉在一起。
+
+    2026-09-22 真事：界面上的「安装」按钮对自己加的市场源报
+    `plugin/install requires exactly one of marketplacePath or remoteMarketplaceName`，
+    装不上，于是 README 改成给命令。命令一旦和版本号/市场名脱钩，别人装上的就是另一个
+    版本——而装的过程一切正常，只有行为对不上。
+    """
+    pyproject = tomllib.loads((REPO / "pyproject.toml").read_text(encoding="utf-8"))
+    version = pyproject["project"]["version"]
+    assert f"plugin marketplace add HelloYoung2025/ads-control-plane@v{version}" in README
+    assert f"plugin add {MANIFEST['name']}@{MARKET['name']}" in README
+    # 预热那行拉的必须是同一个 tag，否则预热的是 A 版、跑起来的是 B 版。
+    assert f"ads-control-plane@v{version} amazon-ads --help" in README
+
+
+def test_the_readme_does_not_tell_people_to_click_a_button_that_fails() -> None:
+    """点击步骤实测装不上（见上一条）。README 里不许再出现「点安装」那套指引。"""
+    steps = README.split("### 为什么不是在界面里点")[0]
+    assert "点「安装」" not in steps
+    assert "点它，点" not in steps
