@@ -40,6 +40,15 @@ DEFAULT_CONFIG_PATH = DEFAULT_ROOT / "config.toml"
 DEFAULT_LOG_DIR = DEFAULT_ROOT / "logs"
 DEFAULT_EXPORT_DIR = Path("/Users/Shared/amazon-ads/导出")
 DEFAULT_RUN_LOG = Path("/Users/Shared/amazon-ads/运行记录.csv")
+
+# 插件形态（SFW 的「定制化 → 插件」装的那种）：一个人装在自己账号里，引擎用 stdio
+# 直接把进程拉起来。没有系统用户、没有 LaunchDaemon、没有端口，所以路径全在自己家里。
+# 上面那组 DEFAULT_* 是给「管理员给别人装、要把密钥挡在另一个 uid 后面」的形态用的，
+# 两组不混用：形态由入口决定（sfw/plugin.py 用下面这组，sfw/__main__.py 用上面那组）。
+USER_ROOT = Path.home() / ".amazon-ads"
+USER_CONFIG_PATH = USER_ROOT / "config.toml"
+USER_EXPORT_DIR = Path.home() / "否定词导出"
+USER_RUN_LOG = USER_ROOT / "运行记录.csv"
 DEFAULT_PORT = 8790
 SERVICE_USER = "_amazonads"
 DEFAULT_TIME_BUDGET_SECONDS = 2700
@@ -437,9 +446,38 @@ def read_lingxing_credentials(path: Path, *, expect_uid: int | None) -> tuple[st
 # ------------------------------------------------------------------ 模板
 
 #: 模板即文档。示例 ID 是编的（见 tests/unit/test_no_real_ids_in_repo.py 的 SYNTHETIC_IDS）。
-_TEMPLATE = """\
+#: 公开仓库地址。插件形态下，模板里给人抄的命令要从这里拼出来。
+REPO_URL = "https://github.com/HelloYoung2025/ads-control-plane"
+
+#: 列店铺的命令。系统形态有装好的 amazon-ads；插件形态一条命令都没装，只能借 uvx 跑。
+SHOPS_CMD_SYSTEM = "sudo amazon-ads shops"
+
+
+def user_shops_command() -> str:
+    """插件形态下列店铺的那行命令。tag 取当前真正跑着的包版本，不写死。
+
+    写死会漂：清单里 @v0.1.0、模板里抄成别的版本，人照着跑出来的是另一份代码，
+    而界面上看不出任何异常。
+    """
+    from importlib.metadata import version
+
+    return (
+        f"uvx --from git+{REPO_URL}@v{version('ads-control-plane')} "
+        f"amazon-ads shops --config {USER_CONFIG_PATH}"
+    )
+
+
+#: 两种形态各自的开头说明：改配置的人是谁、改完该做什么，两边不一样。
+TEMPLATE_HEADER_SYSTEM = """\
 # amazon-ads 配置。只有服务用户能读（0600）：别复制到别处，别把密钥贴进聊天。
-# 改完执行 sudo amazon-ads doctor 检查，再 sudo amazon-ads start。
+# 改完执行 sudo amazon-ads doctor 检查，再 sudo amazon-ads start。"""
+
+TEMPLATE_HEADER_USER = """\
+# amazon-ads 配置。这个文件只有你自己能读（0600）：别复制到别处，别把密钥贴进聊天。
+# 下面 [lingxing] 的两项填完就能用；改完回 SFW 开一个新对话即可，不用重启什么。"""
+
+_TEMPLATE = """\
+{header}
 
 # 平台内部身份：安装时生成，固定不变。
 organization_id = "{organization_id}"
@@ -455,15 +493,16 @@ run_log_path = "{run_log_path}"
 # 一次调用最多跑多少秒（60 到 3000）；没轮到的店下次再跑。
 time_budget_seconds = {time_budget_seconds}
 
-# 领星网关：填好后 sudo amazon-ads shops 能列出可选店铺。
-# url 填领星 MCP 的网关地址；key 填领星 ERP 后台【业务配置 → 开放接口 → MCP】里
-# 当前账号生成的鉴权密钥（不是开放平台的 appId/appSecret）。
-# 密钥继承该账号的店铺权限：第 4 步 shops 列出来的，就是这个账号能看到的店。
+# 领星网关：url 填领星 MCP 的网关地址；key 填领星 ERP 后台
+# 【业务配置 → 开放接口 → MCP】里当前账号生成的鉴权密钥（不是开放平台的 appId/appSecret）。
+# 这两项填好后，下面这行能列出可选店铺：
+#   {shops_cmd}
+# 密钥继承该账号的店铺权限：shops 列出来的，就是这个账号能看到的店。
 [lingxing]
 url = ""
 key = ""
 
-# 店铺表：每家店一段，五项都要填（sudo amazon-ads shops 会打印可粘贴的段落）。
+# 店铺表：每家店一段，五项都要填（上面那行 shops 会打印可直接粘贴的段落）。
 # nickname 是给人看的名字，会进文件名：中文、字母、数字、下划线、连字符，
 # 不超过 20 个字，不能有空格，不能以连字符开头。
 # currency 要在下面 [thresholds.min_spend] 里有一档门槛。
@@ -489,14 +528,27 @@ USD = "20.00"
 
 
 def render_config_template(
-    *, sfw_bearer: str, organization_id: uuid.UUID, connection_id: uuid.UUID
+    *,
+    sfw_bearer: str,
+    organization_id: uuid.UUID,
+    connection_id: uuid.UUID,
+    export_dir: Path = DEFAULT_EXPORT_DIR,
+    run_log_path: Path = DEFAULT_RUN_LOG,
+    header: str = TEMPLATE_HEADER_SYSTEM,
+    shops_cmd: str = SHOPS_CMD_SYSTEM,
 ) -> str:
-    """安装时写下的初始配置：[lingxing] 留空、[[stores]] 只有注释示例、门槛取缺省。"""
+    """安装时写下的初始配置：[lingxing] 留空、[[stores]] 只有注释示例、门槛取缺省。
+
+    两种形态写的是同一份模板，只有开头那两行说明和三条路径不同——插件形态在自己家里、
+    自己改自己的文件，系统形态在 /Library 里、要 sudo。
+    """
     return _TEMPLATE.format(
+        header=header,
+        shops_cmd=shops_cmd,
         organization_id=organization_id,
         connection_id=connection_id,
         sfw_bearer=sfw_bearer,
-        export_dir=DEFAULT_EXPORT_DIR,
-        run_log_path=DEFAULT_RUN_LOG,
+        export_dir=export_dir,
+        run_log_path=run_log_path,
         time_budget_seconds=DEFAULT_TIME_BUDGET_SECONDS,
     )

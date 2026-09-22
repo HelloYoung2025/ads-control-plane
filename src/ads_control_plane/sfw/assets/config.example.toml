@@ -15,15 +15,16 @@ run_log_path = "/Users/Shared/amazon-ads/运行记录.csv"
 # 一次调用最多跑多少秒（60 到 3000）；没轮到的店下次再跑。
 time_budget_seconds = 2700
 
-# 领星网关：填好后 sudo amazon-ads shops 能列出可选店铺。
-# url 填领星 MCP 的网关地址；key 填领星 ERP 后台【业务配置 → 开放接口 → MCP】里
-# 当前账号生成的鉴权密钥（不是开放平台的 appId/appSecret）。
-# 密钥继承该账号的店铺权限：第 4 步 shops 列出来的，就是这个账号能看到的店。
+# 领星网关：url 填领星 MCP 的网关地址；key 填领星 ERP 后台
+# 【业务配置 → 开放接口 → MCP】里当前账号生成的鉴权密钥（不是开放平台的 appId/appSecret）。
+# 这两项填好后，下面这行能列出可选店铺：
+#   sudo amazon-ads shops
+# 密钥继承该账号的店铺权限：shops 列出来的，就是这个账号能看到的店。
 [lingxing]
 url = ""
 key = ""
 
-# 店铺表：每家店一段，五项都要填（sudo amazon-ads shops 会打印可粘贴的段落）。
+# 店铺表：每家店一段，五项都要填（上面那行 shops 会打印可直接粘贴的段落）。
 # nickname 是给人看的名字，会进文件名：中文、字母、数字、下划线、连字符，
 # 不超过 20 个字，不能有空格，不能以连字符开头。
 # currency 要在下面 [thresholds.min_spend] 里有一档门槛。

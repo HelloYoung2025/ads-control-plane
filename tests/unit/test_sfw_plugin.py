@@ -1,0 +1,112 @@
+"""插件形态：入口行为，以及仓库里那三份清单彼此对得上。
+
+清单那几条不是形式校验——它们钉的是「装上去之后会不会跑错版本、会不会指向一个
+不存在的文件」。这类错在本机永远看不出来，只有别人装的时候才炸。
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import stat
+import tomllib
+from pathlib import Path
+
+from ads_control_plane.sfw import plugin
+from ads_control_plane.sfw.config import USER_CONFIG_PATH, USER_EXPORT_DIR
+
+REPO = Path(__file__).resolve().parents[2]
+PLUGIN_DIR = REPO / "plugins" / "amazon-ads"
+MANIFEST = json.loads((PLUGIN_DIR / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
+MCP = json.loads((PLUGIN_DIR / ".mcp.json").read_text(encoding="utf-8"))
+MARKET = json.loads((REPO / ".agents" / "plugins" / "marketplace.json").read_text(encoding="utf-8"))
+
+
+# ------------------------------------------------------------------ 入口
+
+
+def test_the_config_lives_in_the_users_own_home_not_library() -> None:
+    assert USER_CONFIG_PATH.name == "config.toml"
+    assert "/Library/" not in str(USER_CONFIG_PATH)
+
+
+def test_first_run_writes_a_0600_template_with_the_users_own_paths(tmp_path: Path) -> None:
+    path = tmp_path / "cfg" / "config.toml"
+    assert plugin.ensure_config(path) is True
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    text = path.read_text(encoding="utf-8")
+    # 自助版说明：插件是自己装给自己用的，模板开头不能叫人去 sudo。
+    assert "sudo" not in text
+    assert str(USER_EXPORT_DIR) in text
+    assert "/Library/Application Support/amazon-ads" not in text
+    assert tomllib.loads(text)["lingxing"] == {"url": "", "key": ""}
+
+
+def test_second_run_does_not_touch_an_existing_config(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text("# 人改过的", encoding="utf-8")
+    os.chmod(path, 0o600)
+    assert plugin.ensure_config(path) is False
+    assert path.read_text(encoding="utf-8") == "# 人改过的"
+
+
+def test_unwritable_location_does_not_raise(tmp_path: Path) -> None:
+    """写不了模板也要让进程起来：报「配置文件不存在：<路径>」比连不上有用。"""
+    blocker = tmp_path / "blocked"
+    blocker.write_text("我是文件不是目录", encoding="utf-8")
+    assert plugin.ensure_config(blocker / "config.toml") is False
+
+
+# ------------------------------------------------------------------ 清单
+
+
+def test_the_three_manifests_agree_on_the_plugin_name() -> None:
+    entry = next(p for p in MARKET["plugins"] if p["name"] == MANIFEST["name"])
+    assert MANIFEST["name"] == PLUGIN_DIR.name
+    assert entry["source"]["path"] == f"./plugins/{PLUGIN_DIR.name}"
+
+
+def test_manifest_paths_point_at_files_that_exist() -> None:
+    for field in ("mcpServers", "skills"):
+        assert (PLUGIN_DIR / MANIFEST[field].removeprefix("./")).exists(), field
+
+
+def test_the_installed_version_is_the_version_the_launcher_pulls() -> None:
+    """插件版本、包版本、uvx 拉的那个 tag 必须是同一个。
+
+    三者不一致时，SFW 里显示的是 A 版、实际跑起来的是 B 版，而界面上看不出任何异常——
+    只有行为对不上，而那时候没人会怀疑是版本。
+    """
+    pyproject = tomllib.loads((REPO / "pyproject.toml").read_text(encoding="utf-8"))
+    package_version = pyproject["project"]["version"]
+    script = MCP["mcpServers"]["amazon-ads"]["args"][1]
+    ref = re.search(r"ads-control-plane@v([0-9][^\"]*)\"", script)
+    assert ref is not None, "启动脚本里必须钉死一个 @v<版本> 的 tag，不能跟着分支跑"
+    assert ref.group(1) == package_version == MANIFEST["version"]
+
+
+def test_the_launcher_does_not_assume_uv_is_on_path() -> None:
+    """SFW 是图形程序，PATH 里通常没有 ~/.local/bin；直接写 uvx 会「命令找不到」。"""
+    server = MCP["mcpServers"]["amazon-ads"]
+    assert server["command"] == "/bin/sh"
+    script = server["args"][1]
+    assert "$HOME/.local/bin/uvx" in script
+    assert "/opt/homebrew/bin/uvx" in script
+    # 找不到 uv 时要留下一句人能照着做的话，不能静悄悄地退出。
+    assert "astral.sh/uv/install.sh" in script
+
+
+def test_tool_timeout_is_declared_because_the_hub_form_has_no_such_field() -> None:
+    server = MCP["mcpServers"]["amazon-ads"]
+    assert server["tool_timeout_sec"] >= 3600
+    assert server["startup_timeout_sec"] >= 120  # 第一次 uvx 要下载安装，默认超时不够
+
+
+def test_skill_frontmatter_says_when_to_use_it() -> None:
+    """技能靠 description 被路由：插件带不了斜杠命令，说不清就永远不会被选中。"""
+    text = (PLUGIN_DIR / "skills" / "wasted-search-terms" / "SKILL.md").read_text(encoding="utf-8")
+    head = text.split("---")[1]
+    assert re.search(r"^name:\s*wasted-search-terms$", head, re.M)
+    assert re.search(r"^description:\s*\S", head, re.M)
+    assert "否定词" in head and "find_wasted_search_terms" in head

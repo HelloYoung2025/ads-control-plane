@@ -174,8 +174,14 @@ def build_server(
     expect_uid: int | None,
     now_fn: Callable[[], datetime] = _utc_now,
     source_factory: Callable[[PackConfig], SearchTermReadPort] | None = None,
+    fix_hint: str = "找管理员",
 ) -> MCPServer[Any]:
-    """唯一的工具。ConfigError → ToolError("配置错误：…，找管理员")；其余带码错误逐店进文本。"""
+    """唯一的工具。ConfigError → ToolError("配置错误：…，<fix_hint>")；其余带码错误逐店进文本。
+
+    fix_hint 是那句话的结尾，两种形态不一样：系统形态下改配置要 sudo，用的人改不了，
+    只能「找管理员」；插件形态是自己装给自己用的，得告诉他自己去改哪儿。
+    纪律第 4 条要求模型把这句话原样念出来，所以它是直接给人看的。
+    """
     server: MCPServer[Any] = MCPServer(name=SERVER_NAME, instructions=INSTRUCTIONS)
     sources = _SourceHolder(source_factory if source_factory is not None else build_source)
     # 同步工具函数由 SDK 放进工作线程跑：两个对话同时敲 /fd 就是两个线程。一把锁让第二个
@@ -185,12 +191,14 @@ def build_server(
     @server.tool(name=TOOL_NAME, description=TOOL_DESCRIPTION)
     def find_wasted_search_terms() -> str:
         if not run_lock.acquire(timeout=LOCK_WAIT_SECONDS):
-            return "上一次查询还在跑，等它出结果；出来之后敲 /new 回车，再敲 /fd 回车回车。"
+            # 不提 /fd：那是系统形态铺在孩子家里的斜杠命令，插件形态没有（引擎不扫插件里的
+            # prompts/，2026-09-22 在 codex 0.153.4 上实测）。这句话两种形态都得成立。
+            return "上一次查询还在跑，等它出结果；然后开一个新对话再问一次。"
         try:
             try:
                 cfg = load_config(config_path, expect_uid=expect_uid)
             except ConfigError as exc:
-                raise ToolError(f"配置错误：{exc}，找管理员") from exc
+                raise ToolError(f"配置错误：{exc}，{fix_hint}") from exc
             # 不走 service.run_once：它每次现建数据源，而这里要跨调用复用（取数缓存住在源实例里）。
             runs = run_all(cfg, sources.for_config(cfg), now=now_fn())
             logger.info(

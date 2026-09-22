@@ -11,6 +11,8 @@ dependencies = [
 
 [project.scripts]
 amazon-ads = "ads_control_plane.sfw.__main__:main"
+# SFW 插件装好后，引擎用 stdio 拉起来的就是这一条。
+amazon-ads-mcp = "ads_control_plane.sfw.plugin:main"
 
 [dependency-groups]
 dev = [
