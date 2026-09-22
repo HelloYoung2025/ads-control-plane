@@ -49,8 +49,8 @@ VALID = f"""
 organization_id = "{ORG}"
 connection_id = "{CONN}"
 sfw_bearer = "{BEARER}"
-export_dir = "/Users/Shared/ads-pack/导出"
-run_log_path = "/Users/Shared/ads-pack/运行记录.csv"
+export_dir = "/Users/Shared/amazon-ads/导出"
+run_log_path = "/Users/Shared/amazon-ads/运行记录.csv"
 time_budget_seconds = 2700
 
 [lingxing]
@@ -423,13 +423,15 @@ def test_export_dir_and_run_log_must_be_absolute() -> None:
 
 @pytest.mark.parametrize("bad_dir", ["/Users/Shared/ads pack/导出", "/Users/Shared/(x)/导出"])
 def test_export_dir_that_would_break_a_markdown_link_is_refused(bad_dir: str) -> None:
-    text = VALID.replace('export_dir = "/Users/Shared/ads-pack/导出"', f'export_dir = "{bad_dir}"')
+    text = VALID.replace(
+        'export_dir = "/Users/Shared/amazon-ads/导出"', f'export_dir = "{bad_dir}"'
+    )
     _refused(text, "EXPORT_DIR_UNLINKABLE")
 
 
 def test_paths_default_to_the_shared_export_locations() -> None:
-    text = VALID.replace('export_dir = "/Users/Shared/ads-pack/导出"\n', "").replace(
-        'run_log_path = "/Users/Shared/ads-pack/运行记录.csv"\n', ""
+    text = VALID.replace('export_dir = "/Users/Shared/amazon-ads/导出"\n', "").replace(
+        'run_log_path = "/Users/Shared/amazon-ads/运行记录.csv"\n', ""
     )
     cfg = parse_config(text)
     assert (cfg.export_dir, cfg.run_log_path) == (DEFAULT_EXPORT_DIR, DEFAULT_RUN_LOG)
@@ -522,13 +524,13 @@ def test_read_lingxing_credentials_refuses_blank_key_and_open_file(tmp_path: Pat
 
 
 def test_frozen_interface_constants() -> None:
-    assert Path("/Library/Application Support/ads-pack") == DEFAULT_ROOT
+    assert Path("/Library/Application Support/amazon-ads") == DEFAULT_ROOT
     assert DEFAULT_CONFIG_PATH == DEFAULT_ROOT / "config.toml"
     assert DEFAULT_LOG_DIR == DEFAULT_ROOT / "logs"
-    assert Path("/Users/Shared/ads-pack/导出") == DEFAULT_EXPORT_DIR
-    assert Path("/Users/Shared/ads-pack/运行记录.csv") == DEFAULT_RUN_LOG
+    assert Path("/Users/Shared/amazon-ads/导出") == DEFAULT_EXPORT_DIR
+    assert Path("/Users/Shared/amazon-ads/运行记录.csv") == DEFAULT_RUN_LOG
     assert DEFAULT_PORT == 8790
-    assert SERVICE_USER == "_adspack"
+    assert SERVICE_USER == "_amazonads"
     assert NICKNAME_RE.pattern == r"^[\w一-鿿][\w一-鿿-]{0,19}$"
 
 

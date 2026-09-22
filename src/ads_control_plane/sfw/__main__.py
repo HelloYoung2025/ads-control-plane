@@ -1,4 +1,4 @@
-"""`ads-pack` / `python -m ads_control_plane.sfw` 的入口。
+"""`amazon-ads` / `python -m ads_control_plane.sfw` 的入口。
 
 serve 是 LaunchDaemon 跑的那条路，其余子命令（install/start/stop/shops/doctor/
 print-registration）是管理员在终端里用 sudo 跑的，全部交给 installer。
@@ -28,7 +28,7 @@ from ads_control_plane.sfw.config import (
 from ads_control_plane.sfw.installer import InstallerError
 
 #: 干跑时登记 JSON 的 secret 位置放这句话：口令要等真装完才写进 config，现在印一个假的没意义。
-_SECRET_AFTER_INSTALL = "<安装后用 sudo ads-pack print-registration 查看>"
+_SECRET_AFTER_INSTALL = "<安装后用 sudo amazon-ads print-registration 查看>"
 
 _UV_CANDIDATES = (Path("/opt/homebrew/bin/uv"), Path("/usr/local/bin/uv"))
 
@@ -97,8 +97,8 @@ def _install(args: argparse.Namespace) -> int:
     print(json.dumps(payload, ensure_ascii=False))
     print()
     print(f"下一步：sudo -e '{DEFAULT_CONFIG_PATH}' 填 [lingxing]；")
-    print("sudo ads-pack shops；把打印的 [[stores]] 段粘进配置；")
-    print("sudo ads-pack doctor 全过之后 sudo ads-pack start；")
+    print("sudo amazon-ads shops；把打印的 [[stores]] 段粘进配置；")
+    print("sudo amazon-ads doctor 全过之后 sudo amazon-ads start；")
     print("再照 README「管理员一次性安装」第 7–10 步收尾——那几步要在孩子的账号里做，")
     print("且必须重启一次 SFW，否则 /fd 不存在。")
     return 0
@@ -163,7 +163,7 @@ _HANDLERS: dict[str, Callable[[argparse.Namespace], int]] = {
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="ads-pack", description="SFW 电商 Pack：只读否定词组件")
+    parser = argparse.ArgumentParser(prog="amazon-ads", description="SFW 电商 Pack：只读否定词组件")
     commands = parser.add_subparsers(dest="command", required=True)
 
     def with_config(sub: argparse.ArgumentParser) -> argparse.ArgumentParser:
@@ -180,7 +180,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="config.toml 必须属于这个 uid（缺省：本进程的 uid）",
     )
 
-    install = commands.add_parser("install", help="装成 _adspack 名下的 LaunchDaemon（要 sudo）")
+    install = commands.add_parser("install", help="装成 _amazonads 名下的 LaunchDaemon（要 sudo）")
     install.add_argument("--wheel", required=True, help="uv build --wheel 打出来的 .whl")
     install.add_argument("--child-user", required=True, help="孩子的 macOS 登录名")
     install.add_argument("--child-home", help="孩子的家目录（缺省按登录名查）")

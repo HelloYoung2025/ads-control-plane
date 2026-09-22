@@ -253,7 +253,7 @@ async def test_only_one_tool_is_exposed(tmp_path: Path) -> None:
     assert tools[0].input_schema.get("properties", {}) == {}
     assert tools[0].description == TOOL_DESCRIPTION
     assert server.instructions == INSTRUCTIONS
-    assert server.name == "ads-pack"
+    assert server.name == "amazon-ads"
 
 
 # ------------------------------------------------------------------ 2. 文件产物
@@ -865,7 +865,7 @@ async def test_wrong_bearer_gets_401_and_right_bearer_passes(tmp_path: Path) -> 
             )
         assert right.status_code == 200
         result = _sse_result(right.text)
-        assert result["serverInfo"]["name"] == "ads-pack"
+        assert result["serverInfo"]["name"] == "amazon-ads"
         assert result["instructions"] == INSTRUCTIONS
         # 口令读不到（配置文件权限放宽了）→ 对的口令也进不来：fail closed。
         path.chmod(0o644)

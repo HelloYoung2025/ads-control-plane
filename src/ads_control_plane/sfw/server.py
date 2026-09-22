@@ -38,7 +38,7 @@ from ads_control_plane.strategies.ports import SearchTermReadPort
 
 logger = logging.getLogger("ads_control_plane.sfw")
 
-SERVER_NAME = "ads-pack"
+SERVER_NAME = "amazon-ads"
 #: 第二次调用最多在锁上等多久；超了就用一句人话打发，不让它静默等到工具超时。
 LOCK_WAIT_SECONDS = 30.0
 
@@ -234,5 +234,5 @@ def serve(config_path: Path, *, port: int, no_auth: bool, expect_uid: int | None
         stream=sys.stderr,
     )
     app = build_app(config_path, expect_uid=expect_uid, no_auth=no_auth)
-    logger.info("ads-pack 在 http://127.0.0.1:%d/mcp 待命；配置 %s", port, config_path)
+    logger.info("amazon-ads 在 http://127.0.0.1:%d/mcp 待命；配置 %s", port, config_path)
     uvicorn.run(app, host="127.0.0.1", port=port, log_config=None)

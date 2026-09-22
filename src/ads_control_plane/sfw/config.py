@@ -35,13 +35,13 @@ from ads_control_plane.canonical.money import Money
 from ads_control_plane.providers.lingxing.search_terms import LingxingProfileBinding
 from ads_control_plane.strategies.negation import NegationParameterPack
 
-DEFAULT_ROOT = Path("/Library/Application Support/ads-pack")
+DEFAULT_ROOT = Path("/Library/Application Support/amazon-ads")
 DEFAULT_CONFIG_PATH = DEFAULT_ROOT / "config.toml"
 DEFAULT_LOG_DIR = DEFAULT_ROOT / "logs"
-DEFAULT_EXPORT_DIR = Path("/Users/Shared/ads-pack/导出")
-DEFAULT_RUN_LOG = Path("/Users/Shared/ads-pack/运行记录.csv")
+DEFAULT_EXPORT_DIR = Path("/Users/Shared/amazon-ads/导出")
+DEFAULT_RUN_LOG = Path("/Users/Shared/amazon-ads/运行记录.csv")
 DEFAULT_PORT = 8790
-SERVICE_USER = "_adspack"
+SERVICE_USER = "_amazonads"
 DEFAULT_TIME_BUDGET_SECONDS = 2700
 
 #: 店铺昵称会进文件名与 Markdown 链接 `[名字](/路径)`，所以不含空格、不含路径分隔符；
@@ -54,7 +54,7 @@ _BEARER_RE = re.compile(r"^[0-9A-Fa-f]{32,}$")
 #: 链接语法 `[名字](/路径)` 里，路径遇到空白或括号就断——export_dir 不能含这些字符。
 _UNLINKABLE_RE = re.compile(r"[\s()]")
 
-#: 站点 → 报表金额的币种。**只给 `ads-pack shops` 做建议**：配置里每家店的币种由人
+#: 站点 → 报表金额的币种。**只给 `amazon-ads shops` 做建议**：配置里每家店的币种由人
 #: 显式写下并逐店校验，表里没有的站点不猜。它依赖「领星报表的 spends 是站点本币」
 #: 这个前提，前提是否已被实测证实去登记簿看 DEC-024，这里不复述。
 MARKETPLACE_CURRENCY: dict[str, str] = {
@@ -286,7 +286,7 @@ def _parse_stores(raw_stores: list[_RawStore], thresholds: Thresholds) -> tuple[
     if not raw_stores:
         raise ConfigError(
             "STORES_EMPTY",
-            "[[stores]] 店铺表是空的：至少要填一家店（sudo ads-pack shops 会列出可选的店铺）",
+            "[[stores]] 店铺表是空的：至少要填一家店（sudo amazon-ads shops 会列出可选的店铺）",
         )
     stores: list[StoreConfig] = []
     seen_profiles: set[str] = set()
@@ -424,7 +424,7 @@ def load_config(path: Path, *, expect_uid: int | None) -> PackConfig:
 
 
 def read_lingxing_credentials(path: Path, *, expect_uid: int | None) -> tuple[str, str]:
-    """只读 [lingxing] 的 url/key，不碰店铺表：`ads-pack shops` 跑的时候店铺表还是空的。"""
+    """只读 [lingxing] 的 url/key，不碰店铺表：`amazon-ads shops` 跑的时候店铺表还是空的。"""
     document = _load_toml(_read_private_text(path, expect_uid=expect_uid))
     section = document.get("lingxing")
     try:
@@ -438,8 +438,8 @@ def read_lingxing_credentials(path: Path, *, expect_uid: int | None) -> tuple[st
 
 #: 模板即文档。示例 ID 是编的（见 tests/unit/test_no_real_ids_in_repo.py 的 SYNTHETIC_IDS）。
 _TEMPLATE = """\
-# ads-pack 配置。只有服务用户能读（0600）：别复制到别处，别把密钥贴进聊天。
-# 改完执行 sudo ads-pack doctor 检查，再 sudo ads-pack start。
+# amazon-ads 配置。只有服务用户能读（0600）：别复制到别处，别把密钥贴进聊天。
+# 改完执行 sudo amazon-ads doctor 检查，再 sudo amazon-ads start。
 
 # 平台内部身份：安装时生成，固定不变。
 organization_id = "{organization_id}"
@@ -455,7 +455,7 @@ run_log_path = "{run_log_path}"
 # 一次调用最多跑多少秒（60 到 3000）；没轮到的店下次再跑。
 time_budget_seconds = {time_budget_seconds}
 
-# 领星网关：填好后 sudo ads-pack shops 能列出可选店铺。
+# 领星网关：填好后 sudo amazon-ads shops 能列出可选店铺。
 # url 填领星 MCP 的网关地址；key 填领星 ERP 后台【业务配置 → 开放接口 → MCP】里
 # 当前账号生成的鉴权密钥（不是开放平台的 appId/appSecret）。
 # 密钥继承该账号的店铺权限：第 4 步 shops 列出来的，就是这个账号能看到的店。
@@ -463,7 +463,7 @@ time_budget_seconds = {time_budget_seconds}
 url = ""
 key = ""
 
-# 店铺表：每家店一段，五项都要填（sudo ads-pack shops 会打印可粘贴的段落）。
+# 店铺表：每家店一段，五项都要填（sudo amazon-ads shops 会打印可粘贴的段落）。
 # nickname 是给人看的名字，会进文件名：中文、字母、数字、下划线、连字符，
 # 不超过 20 个字，不能有空格，不能以连字符开头。
 # currency 要在下面 [thresholds.min_spend] 里有一档门槛。

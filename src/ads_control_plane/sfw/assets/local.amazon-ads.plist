@@ -1,15 +1,15 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- ads-pack 的 LaunchDaemon 模板：installer.render_plist 把占位符填成绝对路径。
-     以 _adspack 运行、KeepAlive 常驻；没有 EnvironmentVariables——密钥只在 config.toml 里。 -->
+<!-- amazon-ads 的 LaunchDaemon 模板：installer.render_plist 把占位符填成绝对路径。
+     以 _amazonads 运行、KeepAlive 常驻；没有 EnvironmentVariables——密钥只在 config.toml 里。 -->
 <plist version="1.0">
 <dict>
 	<key>Label</key>
-	<string>local.ads-pack</string>
+	<string>local.amazon-ads</string>
 	<key>UserName</key>
-	<string>_adspack</string>
+	<string>_amazonads</string>
 	<key>GroupName</key>
-	<string>_adspack</string>
+	<string>_amazonads</string>
 	<key>ProgramArguments</key>
 	<array>
 		<string>${venv_python}</string>

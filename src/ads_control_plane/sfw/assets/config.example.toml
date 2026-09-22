@@ -1,5 +1,5 @@
-# ads-pack 配置。只有服务用户能读（0600）：别复制到别处，别把密钥贴进聊天。
-# 改完执行 sudo ads-pack doctor 检查，再 sudo ads-pack start。
+# amazon-ads 配置。只有服务用户能读（0600）：别复制到别处，别把密钥贴进聊天。
+# 改完执行 sudo amazon-ads doctor 检查，再 sudo amazon-ads start。
 
 # 平台内部身份：安装时生成，固定不变。
 organization_id = "00000000-0000-4000-8000-000000000001"
@@ -9,13 +9,13 @@ connection_id = "00000000-0000-4000-8000-000000000002"
 sfw_bearer = "<安装时自动生成的口令，不要手改>"
 
 # 产物目录与运行记录；路径里不能有空格。
-export_dir = "/Users/Shared/ads-pack/导出"
-run_log_path = "/Users/Shared/ads-pack/运行记录.csv"
+export_dir = "/Users/Shared/amazon-ads/导出"
+run_log_path = "/Users/Shared/amazon-ads/运行记录.csv"
 
 # 一次调用最多跑多少秒（60 到 3000）；没轮到的店下次再跑。
 time_budget_seconds = 2700
 
-# 领星网关：填好后 sudo ads-pack shops 能列出可选店铺。
+# 领星网关：填好后 sudo amazon-ads shops 能列出可选店铺。
 # url 填领星 MCP 的网关地址；key 填领星 ERP 后台【业务配置 → 开放接口 → MCP】里
 # 当前账号生成的鉴权密钥（不是开放平台的 appId/appSecret）。
 # 密钥继承该账号的店铺权限：第 4 步 shops 列出来的，就是这个账号能看到的店。
@@ -23,7 +23,7 @@ time_budget_seconds = 2700
 url = ""
 key = ""
 
-# 店铺表：每家店一段，五项都要填（sudo ads-pack shops 会打印可粘贴的段落）。
+# 店铺表：每家店一段，五项都要填（sudo amazon-ads shops 会打印可粘贴的段落）。
 # nickname 是给人看的名字，会进文件名：中文、字母、数字、下划线、连字符，
 # 不超过 20 个字，不能有空格，不能以连字符开头。
 # currency 要在下面 [thresholds.min_spend] 里有一档门槛。

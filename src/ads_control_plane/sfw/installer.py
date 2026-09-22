@@ -1,16 +1,16 @@
-"""安装器：把组件装成 `_adspack` 名下的 LaunchDaemon，并给孩子的家目录放三样东西。
+"""安装器：把组件装成 `_amazonads` 名下的 LaunchDaemon，并给孩子的家目录放三样东西。
 
 每个副作用先由纯函数组装成 `Step`（做什么、写到哪、属谁、为什么），`execute` 再逐条做；
 `--dry-run` 只打印。这样分层不是为了好看：`dscl`/`launchctl`/`chown` 一跑就改了系统，
 而这些命令在开发机上不能试（规格 §0 第 1 条），测试能盯住的只有「计划」——所以计划
 必须把每一步说全，执行层只做搬运，不再做任何决定。
 
-隔离模型（计划 §1、§8 攻击 1/2/4 的修法）：组件以系统用户 `_adspack` 常驻，代码、venv、
-config 在 `/Library/Application Support/ads-pack/`，产物在 `/Users/Shared/ads-pack/导出/`。
+隔离模型（计划 §1、§8 攻击 1/2/4 的修法）：组件以系统用户 `_amazonads` 常驻，代码、venv、
+config 在 `/Library/Application Support/amazon-ads/`，产物在 `/Users/Shared/amazon-ads/导出/`。
 孩子 uid 下的进程读 config 得 EACCES、写导出目录得 EACCES——「密钥读不走、文件改不了」
 两条都由文件属主承载，不靠组件内的任何状态。代码也不交给服务用户：python/、venv/ 与
-/usr/local/bin/ads-pack 留 root:wheel 0755，`_adspack` 名下只有 config.toml（0600）与
-logs/（0755）——被攻破的 `_adspack` 进程改不了自己下次启动要跑的代码。`doctor` 把这三条
+/usr/local/bin/amazon-ads 留 root:wheel 0755，`_amazonads` 名下只有 config.toml（0600）与
+logs/（0755）——被攻破的 `_amazonads` 进程改不了自己下次启动要跑的代码。`doctor` 把这三条
 按 stat 结果复核一遍。
 
 本模块在开发机上从未真跑过（规格 §0 不允许）：`dscl` 建用户序列、`uv python install
@@ -63,16 +63,16 @@ from ads_control_plane.sfw.config import (
     render_config_template,
 )
 
-LABEL = "local.ads-pack"
+LABEL = "local.amazon-ads"
 PLIST_PATH = Path("/Library/LaunchDaemons") / f"{LABEL}.plist"
-LOG_PATH = DEFAULT_LOG_DIR / "ads-pack.log"
-BIN_LINK = Path("/usr/local/bin/ads-pack")
+LOG_PATH = DEFAULT_LOG_DIR / "amazon-ads.log"
+BIN_LINK = Path("/usr/local/bin/amazon-ads")
 #: launchd 起服务时打开的第一个文件；doctor 拿它当「代码属 root」的哨兵。
 VENV_PYTHON = DEFAULT_ROOT / "venv" / "bin" / "python"
 PYTHON_VERSION = "3.12"
 
 #: SFW 登记 JSON 的键闭集（宿主合同 §3-3）与 name 形状（§3-1）；`tool_timeout_sec` 上限（§3-5）。
-REGISTRATION_NAME = "ads-pack"
+REGISTRATION_NAME = "amazon-ads"
 REGISTRATION_KEYS = frozenset({"name", "url", "auth", "secret", "tool_timeout_sec"})
 TOOL_TIMEOUT_SEC = 3600
 _NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
@@ -126,7 +126,7 @@ class Step:
 class HostState:
     """安装前从宿主读到的事实快照。读是只读查询（`inspect_host`），计划函数只看快照。"""
 
-    #: `_adspack` 已存在时它的 uid。再装一次不能换号：旧号名下的文件会全部成孤儿。
+    #: `_amazonads` 已存在时它的 uid。再装一次不能换号：旧号名下的文件会全部成孤儿。
     service_uid: int | None = None
     #: 目录服务里已被占用的 uid 与 gid。
     taken_ids: frozenset[int] = frozenset()
@@ -205,7 +205,7 @@ def _url_problems(url: str) -> list[str]:
 
 
 def render_plist(*, venv_python: Path, config_path: Path, port: int, log_path: Path) -> str:
-    """把 assets/local.ads-pack.plist 模板填成绝对路径。值先做 XML 转义再代入。"""
+    """把 assets/local.amazon-ads.plist 模板填成绝对路径。值先做 XML 转义再代入。"""
     for name, path in (
         ("venv_python", venv_python),
         ("config_path", config_path),
@@ -249,17 +249,17 @@ def pick_service_id(taken: Collection[int]) -> int:
     for candidate in SERVICE_ID_RANGE:
         if candidate not in taken:
             return candidate
-    raise InstallerError("200 到 400 的系统账号段没有空号了：手工建 _adspack 后再装")
+    raise InstallerError("200 到 400 的系统账号段没有空号了：手工建 _amazonads 后再装")
 
 
 def plan_service_user(host: HostState) -> tuple[Step, ...]:
-    """建隐藏的系统用户 `_adspack`：无 shell、家目录 /var/empty、不进登录窗。已存在则一步不动。"""
+    """建隐藏的系统用户 `_amazonads`：无 shell、家目录 /var/empty、不进登录窗。已存在则一步不动。"""
     if host.service_uid is not None:
         return ()
     ident = str(pick_service_id(host.taken_ids))
     group = f"/Groups/{SERVICE_USER}"
     user = f"/Users/{SERVICE_USER}"
-    real_name = "ads-pack service"
+    real_name = "amazon-ads service"
 
     def dscl(record: str, *attribute: str) -> Step:
         return _run((DSCL, ".", "-create", record, *attribute), f"建系统账号 {SERVICE_USER}")
@@ -329,7 +329,7 @@ def plan_install(
     # ② 代码与解释器：uv 装一份托管 Python 到 /Library 下，venv 指向它，再装 wheel。
     #    venv 那一步用 UV_PYTHON_INSTALL_DIR 而不是写死解释器路径：托管 Python 的目录名
     #    带完整小版本号（cpython-3.12.x-…），计划期不知道 x 是几。
-    #    这三样以 root 装、留给 root（0755）：_adspack 只需要读和执行，改不了——被攻破的
+    #    这三样以 root 装、留给 root（0755）：_amazonads 只需要读和执行，改不了——被攻破的
     #    服务进程于是改不了自己下次启动要跑的代码。它名下只有 config.toml 与 logs/。
     steps += [
         _mkdir(root, "root:wheel", 0o755, "组件的家：代码、venv、config、日志都在这"),
@@ -395,12 +395,12 @@ def plan_install(
                 ),
                 SERVICE_USER,
                 0o600,
-                "配置模板：只有 _adspack 能读，密钥以后填在这里",
+                "配置模板：只有 _amazonads 能读，密钥以后填在这里",
             )
         )
 
-    # ④ 产物目录：属 _adspack，别人只读。上一级也归它——运行记录.csv 写在那里。
-    #    /Users/Shared 是 1777，谁都能先建出 ads-pack/：已存在且属主不是 _adspack 就拒绝装
+    # ④ 产物目录：属 _amazonads，别人只读。上一级也归它——运行记录.csv 写在那里。
+    #    /Users/Shared 是 1777，谁都能先建出 amazon-ads/：已存在且属主不是 _amazonads 就拒绝装
     #    （里面可能预置了文件），属主对才校正权限——不收编、也不假装校正过（2026-09-20 复审）。
     steps += [
         _mkdir(export_dir.parent, service, 0o755, "运行记录写在这一层"),
@@ -423,9 +423,9 @@ def plan_install(
         )
     )
 
-    # ⑥ 管理员命令：sudo ads-pack …
+    # ⑥ 管理员命令：sudo amazon-ads …
     #    排在孩子家目录之前：那一组遇到障碍就会停（例如 ~/Desktop 被 iCloud「桌面与文稿」
-    #    做成符号链接），而 README 第 4–6 步全要用 ads-pack。管理员自己的命令不该被
+    #    做成符号链接），而 README 第 4–6 步全要用 amazon-ads。管理员自己的命令不该被
     #    孩子家里的东西挡住——两组之间没有任何依赖。
     #    /usr/local/bin 在 Intel Mac 上常归 Homebrew 的管理员账号所有，已存在就不碰它的属主。
     steps += [
@@ -434,9 +434,9 @@ def plan_install(
         ),
         _symlink(
             BIN_LINK,
-            venv / "bin" / "ads-pack",
+            venv / "bin" / "amazon-ads",
             None,
-            "管理员命令：sudo ads-pack shops/doctor/start",
+            "管理员命令：sudo amazon-ads shops/doctor/start",
         ),
     ]
     # ⑦ 孩子的家目录只放三样：项目文件夹里的 AGENTS.md、斜杠命令、桌面上指向导出目录的链接。
@@ -777,7 +777,7 @@ def wait_for_401(
 
 def judge_service_user(uid: int | None) -> Check:
     if uid is None:
-        return ("系统用户", False, f"还没有系统用户 {SERVICE_USER}：先 sudo ads-pack install")
+        return ("系统用户", False, f"还没有系统用户 {SERVICE_USER}：先 sudo amazon-ads install")
     return ("系统用户", True, f"{SERVICE_USER} 存在，uid {uid}")
 
 
@@ -803,9 +803,9 @@ def judge_export_dir(
     *,
     name: str = "导出目录",
 ) -> Check:
-    """导出目录与运行记录目录同一套判定：属 _adspack、属主可写、别人改不了、不是孩子的。"""
+    """导出目录与运行记录目录同一套判定：属 _amazonads、属主可写、别人改不了、不是孩子的。"""
     if st is None:
-        return (name, False, f"{name}不存在：先 sudo ads-pack install")
+        return (name, False, f"{name}不存在：先 sudo amazon-ads install")
     if not stat.S_ISDIR(st.st_mode):
         return (name, False, f"{name}不是目录")
     if expect_uid is not None and st.st_uid != expect_uid:
@@ -824,14 +824,14 @@ def judge_export_dir(
 
 
 def judge_code_owner(st: os.stat_result | None, path: Path) -> Check:
-    """代码属 root：被攻破的 _adspack 进程改不了自己下次启动要跑的解释器与包。
+    """代码属 root：被攻破的 _amazonads 进程改不了自己下次启动要跑的解释器与包。
 
     只看 venv 里的解释器这一个哨兵：它是 launchd 起服务时打开的第一个文件，
     属主不对，整棵 python/、venv/ 多半都被交出去了。
     """
     name = "代码属 root"
     if st is None:
-        return (name, False, f"{path} 不存在：先 sudo ads-pack install")
+        return (name, False, f"{path} 不存在：先 sudo amazon-ads install")
     if st.st_uid != 0:
         fix = " ".join(f"'{DEFAULT_ROOT / sub}'" for sub in ("python", "venv"))
         return (
@@ -870,7 +870,7 @@ def judge_port(state: PortState, port: int, *, daemon_registered: bool) -> Check
                 name,
                 False,
                 f"LaunchDaemon {LABEL} 已登记，但没人在听：服务没起来。"
-                f"先看 {LOG_PATH}，再 sudo ads-pack start",
+                f"先看 {LOG_PATH}，再 sudo amazon-ads start",
             )
         return (name, True, "空闲，可以 start")
     if state == "ours":
@@ -879,8 +879,8 @@ def judge_port(state: PortState, port: int, *, daemon_registered: bool) -> Check
         name,
         False,
         f"被别的程序占用（GET /mcp 没得到 401）：用 sudo lsof -nP -iTCP:{port} -sTCP:LISTEN "
-        "查是谁并停掉它；真要换端口得改 /Library/LaunchDaemons/local.ads-pack.plist 里的 "
-        "--port，再 sudo ads-pack stop、sudo ads-pack start --port <新端口>，"
+        "查是谁并停掉它；真要换端口得改 /Library/LaunchDaemons/local.amazon-ads.plist 里的 "
+        "--port，再 sudo amazon-ads stop、sudo amazon-ads start --port <新端口>，"
         "并用 print-registration --port 重新登记",
     )
 
@@ -898,7 +898,7 @@ def judge_directory(profile_ids: Collection[str], stores: Sequence[StoreConfig])
             False,
             f"名录里有 {len(profile_ids)} 家店，配置里这 {len(missing)} 家不在其中："
             + "、".join(missing)
-            + "；用 sudo ads-pack shops 重新对一遍",
+            + "；用 sudo amazon-ads shops 重新对一遍",
         )
     return (
         name,

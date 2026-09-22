@@ -257,25 +257,25 @@ def _rendered(**overrides: object) -> dict[str, object]:
 
 def test_plist_runs_as_the_service_user_with_absolute_paths() -> None:
     plist = _rendered()
-    assert plist["Label"] == "local.ads-pack"
-    assert plist["UserName"] == "_adspack"
+    assert plist["Label"] == "local.amazon-ads"
+    assert plist["UserName"] == "_amazonads"
     assert "EnvironmentVariables" not in plist
     argv = plist["ProgramArguments"]
     assert isinstance(argv, list) and Path(argv[0]).is_absolute()
     assert argv == [
-        "/Library/Application Support/ads-pack/venv/bin/python",
+        "/Library/Application Support/amazon-ads/venv/bin/python",
         "-m",
         "ads_control_plane.sfw",
         "serve",
         "--config",
-        "/Library/Application Support/ads-pack/config.toml",
+        "/Library/Application Support/amazon-ads/config.toml",
         "--port",
         "8790",
     ]
     assert plist["KeepAlive"] is True and plist["RunAtLoad"] is True
-    assert plist["WorkingDirectory"] == "/Library/Application Support/ads-pack"
+    assert plist["WorkingDirectory"] == "/Library/Application Support/amazon-ads"
     assert plist["StandardOutPath"] == plist["StandardErrorPath"]
-    assert plist["StandardOutPath"] == "/Library/Application Support/ads-pack/logs/ads-pack.log"
+    assert plist["StandardOutPath"] == "/Library/Application Support/amazon-ads/logs/amazon-ads.log"
 
 
 def test_plist_escapes_xml_and_refuses_relative_paths() -> None:
@@ -322,16 +322,16 @@ def test_install_plan_covers_the_eight_admin_steps(assets: Path, tmp_path: Path)
     steps = _plan(assets, tmp_path, host=HostState(taken_ids=frozenset({200, 201, 202})))
     argvs = [s.argv for s in steps if s.kind == "run" and s.argv is not None]
 
-    # ① _adspack：dscl 序列，uid 取 200..400 里第一个空号，无 shell、家目录 /var/empty、隐藏。
+    # ① _amazonads：dscl 序列，uid 取 200..400 里第一个空号，无 shell、家目录 /var/empty、隐藏。
     dscl = [a for a in argvs if a[0] == "/usr/bin/dscl"]
-    assert ("/usr/bin/dscl", ".", "-create", "/Users/_adspack", "UniqueID", "203") in dscl
-    assert ("/usr/bin/dscl", ".", "-create", "/Users/_adspack", "PrimaryGroupID", "203") in dscl
-    assert ("/usr/bin/dscl", ".", "-create", "/Groups/_adspack", "PrimaryGroupID", "203") in dscl
+    assert ("/usr/bin/dscl", ".", "-create", "/Users/_amazonads", "UniqueID", "203") in dscl
+    assert ("/usr/bin/dscl", ".", "-create", "/Users/_amazonads", "PrimaryGroupID", "203") in dscl
+    assert ("/usr/bin/dscl", ".", "-create", "/Groups/_amazonads", "PrimaryGroupID", "203") in dscl
     assert (
         "/usr/bin/dscl",
         ".",
         "-create",
-        "/Users/_adspack",
+        "/Users/_amazonads",
         "UserShell",
         "/usr/bin/false",
     ) in dscl
@@ -339,11 +339,11 @@ def test_install_plan_covers_the_eight_admin_steps(assets: Path, tmp_path: Path)
         "/usr/bin/dscl",
         ".",
         "-create",
-        "/Users/_adspack",
+        "/Users/_amazonads",
         "NFSHomeDirectory",
         "/var/empty",
     ) in dscl
-    assert ("/usr/bin/dscl", ".", "-create", "/Users/_adspack", "IsHidden", "1") in dscl
+    assert ("/usr/bin/dscl", ".", "-create", "/Users/_amazonads", "IsHidden", "1") in dscl
 
     # ② 目录、托管 Python、venv、wheel；代码留给 root，没有 chown -R。
     uv = str(tmp_path / "bin" / "uv")
@@ -370,10 +370,10 @@ def test_install_plan_covers_the_eight_admin_steps(assets: Path, tmp_path: Path)
         str(DEFAULT_ROOT / "venv/bin/python"),
         wheel,
     ) in argvs
-    # 代码不交给服务用户：没有 chown 步，根目录与 python/ 留 root:wheel；_adspack 名下只有
-    # config.toml、logs/ 与产物目录。被攻破的 _adspack 进程于是改不了自己下次启动要跑的代码。
+    # 代码不交给服务用户：没有 chown 步，根目录与 python/ 留 root:wheel；_amazonads 名下只有
+    # config.toml、logs/ 与产物目录。被攻破的 _amazonads 进程于是改不了自己下次启动要跑的代码。
     assert not [s for s in steps if s.kind == "chown"]
-    owners = {"": "root:wheel", "python": "root:wheel", "logs": "_adspack:_adspack"}
+    owners = {"": "root:wheel", "python": "root:wheel", "logs": "_amazonads:_amazonads"}
     for sub, owner in owners.items():
         [made] = [s for s in _by_path(steps, DEFAULT_ROOT / sub) if s.kind == "mkdir"]
         assert (made.owner, made.mode) == (owner, 0o755), sub
@@ -385,23 +385,23 @@ def test_install_plan_covers_the_eight_admin_steps(assets: Path, tmp_path: Path)
         DEFAULT_EXPORT_DIR.parent,
     }
 
-    # ③ config 模板：属 _adspack、0600、内容 = render_config_template。
+    # ③ config 模板：属 _amazonads、0600、内容 = render_config_template。
     [config] = _by_path(steps, DEFAULT_ROOT / "config.toml")
     assert (config.kind, config.owner, config.mode) == ("write", SERVICE_USER, 0o600)
     assert config.content == render_config_template(
         sfw_bearer=BEARER, organization_id=ORG, connection_id=CONN
     )
 
-    # ④ 导出目录属 _adspack 0755；上一级（运行记录所在）同样。
+    # ④ 导出目录属 _amazonads 0755；上一级（运行记录所在）同样。
     for directory in (DEFAULT_EXPORT_DIR, DEFAULT_EXPORT_DIR.parent):
         [made] = _by_path(steps, directory)
-        assert (made.kind, made.owner, made.mode) == ("mkdir", "_adspack:_adspack", 0o755)
+        assert (made.kind, made.owner, made.mode) == ("mkdir", "_amazonads:_amazonads", 0o755)
 
-    # ⑤ plist root:wheel 0644，内容能解析且以 _adspack 跑。
-    [plist] = _by_path(steps, Path("/Library/LaunchDaemons/local.ads-pack.plist"))
+    # ⑤ plist root:wheel 0644，内容能解析且以 _amazonads 跑。
+    [plist] = _by_path(steps, Path("/Library/LaunchDaemons/local.amazon-ads.plist"))
     assert (plist.kind, plist.owner, plist.mode) == ("write", "root:wheel", 0o644)
     assert plist.content is not None
-    assert plistlib.loads(plist.content.encode())["UserName"] == "_adspack"
+    assert plistlib.loads(plist.content.encode())["UserName"] == "_amazonads"
 
     # ⑥ 孩子家目录三样，属孩子；内容来自随包资源；斜杠命令文件名是 ASCII。
     [agents] = _by_path(steps, home / "否定词" / "AGENTS.md")
@@ -413,15 +413,18 @@ def test_install_plan_covers_the_eight_admin_steps(assets: Path, tmp_path: Path)
     [link] = _by_path(steps, home / "Desktop" / "否定词导出")
     assert (link.kind, link.content, link.owner) == ("symlink", str(DEFAULT_EXPORT_DIR), "kid")
 
-    # /usr/local/bin/ads-pack → venv 里的脚本，且必须排在孩子家目录那一组之前：
+    # /usr/local/bin/amazon-ads → venv 里的脚本，且必须排在孩子家目录那一组之前：
     # 那一组遇到障碍就会停（iCloud 把 ~/Desktop 做成符号链接是最常见的一种），
-    # 而 README 第 4–6 步全要用 ads-pack。管理员的命令不该被孩子家里的东西挡住。
-    [bin_link] = _by_path(steps, Path("/usr/local/bin/ads-pack"))
+    # 而 README 第 4–6 步全要用 amazon-ads。管理员的命令不该被孩子家里的东西挡住。
+    [bin_link] = _by_path(steps, Path("/usr/local/bin/amazon-ads"))
     paths = [str(s.path) for s in steps]
-    assert paths.index("/usr/local/bin/ads-pack") < min(
+    assert paths.index("/usr/local/bin/amazon-ads") < min(
         i for i, p in enumerate(paths) if "/home/kid" in p
     ), "管理员命令要排在孩子家目录之前"
-    assert (bin_link.kind, bin_link.content) == ("symlink", str(DEFAULT_ROOT / "venv/bin/ads-pack"))
+    assert (bin_link.kind, bin_link.content) == (
+        "symlink",
+        str(DEFAULT_ROOT / "venv/bin/amazon-ads"),
+    )
 
     # 每一步都说得出为什么，且没有 chmod（新装的东西在建时就带权限）。
     assert all(s.why and CJK.search(s.why) for s in steps)
@@ -452,7 +455,7 @@ def test_install_command_plan_never_touches_the_child_home_except_three_paths(
         if step.kind == "run":
             assert not any(str(home) in arg for arg in step.argv or ()), step.argv
     # 家目录之外只有 /usr/local/bin 保留已存在的属主（Intel Mac 上它常归 Homebrew 的管理员）；
-    # 服务目录不 keep_existing：/Users/Shared 是 1777，ads-pack/ 可能被任何账号先建出来，
+    # 服务目录不 keep_existing：/Users/Shared 是 1777，amazon-ads/ 可能被任何账号先建出来，
     # 已存在时属主不对就拒绝（见 test_apply_refuses_a_service_dir_someone_else_built）。
     kept = {s.path for s in _plan(assets, tmp_path) if s.kind == "mkdir" and s.keep_existing}
     assert kept == {
@@ -471,19 +474,19 @@ def test_install_plan_keeps_an_existing_config_and_user(assets: Path, tmp_path: 
     assert [s.path for s in steps if s.kind == "chown"] == [DEFAULT_ROOT / "config.toml"], (
         "重装也只校正 config.toml 的属主，代码树不交给服务用户"
     )
-    assert config_steps[0].owner == "_adspack:_adspack" and config_steps[1].mode == 0o600
+    assert config_steps[0].owner == "_amazonads:_amazonads" and config_steps[1].mode == 0o600
     assert not any(s.kind == "write" and s.content and BEARER in s.content for s in steps)
 
 
 def test_install_plan_moves_the_run_log_next_to_a_custom_export_dir(
     assets: Path, tmp_path: Path
 ) -> None:
-    export_dir = Path("/Volumes/外置/ads-pack/导出")
+    export_dir = Path("/Volumes/外置/amazon-ads/导出")
     steps = _plan(assets, tmp_path, export_dir=export_dir)
     [config] = _by_path(steps, DEFAULT_ROOT / "config.toml")
     document = tomllib.loads(config.content or "")
     assert document["export_dir"] == str(export_dir)
-    assert document["run_log_path"] == "/Volumes/外置/ads-pack/运行记录.csv"
+    assert document["run_log_path"] == "/Volumes/外置/amazon-ads/运行记录.csv"
     [link] = _by_path(steps, tmp_path / "home" / "kid" / "Desktop" / "否定词导出")
     assert link.content == str(export_dir)
 
@@ -514,8 +517,8 @@ def test_service_id_is_the_first_free_number_in_the_system_range() -> None:
 def test_inspect_host_reads_the_directory_through_an_injected_query(tmp_path: Path) -> None:
     def query(argv: Sequence[str]) -> str:
         if "/Users" in argv:
-            return "_www  70\nkid  501\n_adspack  231\n"
-        return "wheel  0\nstaff  20\n_adspack  231\n"
+            return "_www  70\nkid  501\n_amazonads  231\n"
+        return "wheel  0\nstaff  20\n_amazonads  231\n"
 
     host = installer.inspect_host(config_path=tmp_path / "missing.toml", query=query)
     assert host == HostState(
@@ -525,15 +528,17 @@ def test_inspect_host_reads_the_directory_through_an_injected_query(tmp_path: Pa
 
 
 def test_start_and_stop_plans_use_the_system_domain() -> None:
-    kickstart = ("/bin/launchctl", "kickstart", "-k", "system/local.ads-pack")
+    kickstart = ("/bin/launchctl", "kickstart", "-k", "system/local.amazon-ads")
     assert [s.argv for s in plan_start(loaded=False)] == [
-        ("/bin/launchctl", "bootstrap", "system", "/Library/LaunchDaemons/local.ads-pack.plist"),
+        ("/bin/launchctl", "bootstrap", "system", "/Library/LaunchDaemons/local.amazon-ads.plist"),
         kickstart,
     ]
     assert [s.argv for s in plan_start(loaded=True)] == [kickstart], (
         "登记过的只重启，不再 bootstrap"
     )
-    assert [s.argv for s in plan_stop()] == [("/bin/launchctl", "bootout", "system/local.ads-pack")]
+    assert [s.argv for s in plan_stop()] == [
+        ("/bin/launchctl", "bootout", "system/local.amazon-ads")
+    ]
     asked: list[Sequence[str]] = []
 
     def fake_exit_code(argv: Sequence[str]) -> int:
@@ -542,7 +547,7 @@ def test_start_and_stop_plans_use_the_system_domain() -> None:
 
     assert installer.daemon_loaded(run=fake_exit_code) is True
     assert installer.daemon_loaded(run=fake_exit_code) is False
-    assert asked == [("/bin/launchctl", "print", "system/local.ads-pack")] * 2
+    assert asked == [("/bin/launchctl", "print", "system/local.amazon-ads")] * 2
 
 
 def test_wait_for_401_polls_until_the_bearer_gate_answers() -> None:
@@ -652,9 +657,9 @@ def test_apply_refuses_a_service_dir_someone_else_built(
 ) -> None:
     """已存在的目录：服务目录属主对才校正权限，属主不对就拒绝（不收编别人预置的文件）；
     孩子的目录不动；符号链接一律拒绝。"""
-    shared = tmp_path / "ads-pack"
+    shared = tmp_path / "amazon-ads"
     shared.mkdir(mode=0o700)
-    service = Step(kind="mkdir", path=shared, owner="_adspack:_adspack", mode=0o755, why="x")
+    service = Step(kind="mkdir", path=shared, owner="_amazonads:_amazonads", mode=0o755, why="x")
     assert installer._apply(service) == "已存在，属主对，权限按上面校正"
     assert stat.S_IMODE(shared.stat().st_mode) == 0o755
     planted = shared / "运行记录.csv"
@@ -675,7 +680,7 @@ def test_apply_refuses_a_service_dir_someone_else_built(
     link.symlink_to(tmp_path / "elsewhere")
     with pytest.raises(InstallerError, match="不是目录"):
         installer._apply(
-            Step(kind="mkdir", path=link, owner="_adspack:_adspack", mode=0o755, why="x")
+            Step(kind="mkdir", path=link, owner="_amazonads:_amazonads", mode=0o755, why="x")
         )
     assert not (tmp_path / "elsewhere").exists()
     with pytest.raises(InstallerError, match="绝对路径"):
@@ -823,7 +828,7 @@ def test_doctor_reports_a_busy_port_and_a_failed_directory_call(
     passed, detail = verdicts[f"端口 {port}"]
     assert passed is False
     assert f"sudo lsof -nP -iTCP:{port} -sTCP:LISTEN" in detail, "要给出查是谁占了的命令"
-    assert "local.ads-pack.plist" in detail, "「换端口」不能是句悬空的话：端口写死在 plist 里"
+    assert "local.amazon-ads.plist" in detail, "「换端口」不能是句悬空的话：端口写死在 plist 里"
     assert verdicts["领星名录"] == (False, "取数失败（LX_TRANSPORT_ERROR）：timed out")
     assert [name for name, _, _ in offline][-1] == f"端口 {port}"
     assert len(FakeClient.calls) == 1, "离线体检一次名录都不查"
@@ -967,7 +972,7 @@ def test_serve_import_is_deferred_and_forwards_the_flags(monkeypatch: pytest.Mon
     assert calls == [(Path("/x/config.toml"), 9, True, 7)]
     assert cli.main(["serve"]) == 0
     assert calls[-1] == (
-        Path("/Library/Application Support/ads-pack/config.toml"),
+        Path("/Library/Application Support/amazon-ads/config.toml"),
         8790,
         False,
         os.geteuid(),
@@ -1006,7 +1011,7 @@ def test_install_dry_run_prints_the_plan_and_a_placeholder_secret(
     assert "[干跑]" in out and "UniqueID 205" in out
     payload = json.loads(next(line for line in out.splitlines() if line.startswith("{")))
     assert set(payload) == REGISTRATION_KEYS
-    assert payload["secret"] == "<安装后用 sudo ads-pack print-registration 查看>"
+    assert payload["secret"] == "<安装后用 sudo amazon-ads print-registration 查看>"
     assert list(home.iterdir()) == []
 
     monkeypatch.setattr(os, "geteuid", lambda: 501)
@@ -1061,7 +1066,7 @@ def test_a_registered_daemon_with_nobody_listening_is_a_failure_not_a_green_chec
     """
     name, passed, detail = judge_port("free", 8790, daemon_registered=True)
     assert passed is False
-    assert "没起来" in detail and "ads-pack start" in detail
+    assert "没起来" in detail and "amazon-ads start" in detail
     assert str(LOG_PATH) in detail, "报了故障就得给出下一步看哪里"
     assert judge_port("free", 8790, daemon_registered=False)[1] is True, (
         "还没 start 的时候，端口空闲就该是通过——这条路不能被上面那条压掉"

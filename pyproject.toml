@@ -10,7 +10,7 @@ dependencies = [
 ]
 
 [project.scripts]
-ads-pack = "ads_control_plane.sfw.__main__:main"
+amazon-ads = "ads_control_plane.sfw.__main__:main"
 
 [dependency-groups]
 dev = [
