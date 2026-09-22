@@ -109,7 +109,9 @@ def test_the_launcher_does_not_assume_uv_is_on_path() -> None:
 def test_tool_timeout_is_declared_because_the_hub_form_has_no_such_field() -> None:
     server = MCP["mcpServers"]["amazon-ads"]
     assert server["tool_timeout_sec"] >= 3600
-    assert server["startup_timeout_sec"] >= 120  # 第一次 uvx 要下载安装，默认超时不够
+    # 2026-09-22 实测：依赖缓存是冷的时候，第一次从 git 装要 159 秒。180 秒只差 21 秒就
+    # 判失败，而判失败的后果是人以为「这东西不能用」。留足余量，反正找不到 uv 是秒退。
+    assert server["startup_timeout_sec"] >= 600
 
 
 def test_skill_frontmatter_says_when_to_use_it() -> None:
