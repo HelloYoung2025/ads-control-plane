@@ -19,6 +19,7 @@ import uuid
 from pathlib import Path
 
 from ads_control_plane.sfw.config import (
+    BEARER_NOTE_USER,
     TEMPLATE_HEADER_USER,
     USER_CONFIG_PATH,
     USER_EXPORT_DIR,
@@ -52,6 +53,7 @@ def ensure_config(path: Path) -> bool:
             run_log_path=USER_RUN_LOG,
             header=TEMPLATE_HEADER_USER,
             shops_cmd=user_shops_command(),
+            bearer_note=BEARER_NOTE_USER,
         )
         # O_EXCL：两个 SFW 对话同时冷启动时，只有一个会写成功，另一个走 FileExistsError。
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)

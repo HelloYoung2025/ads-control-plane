@@ -452,6 +452,17 @@ REPO_URL = "https://github.com/HelloYoung2025/ads-control-plane"
 #: 列店铺的命令。系统形态有装好的 amazon-ads；插件形态一条命令都没装，只能借 uvx 跑。
 SHOPS_CMD_SYSTEM = "sudo amazon-ads shops"
 
+#: sfw_bearer 这一项在两种形态下意思完全不同：HTTP 那条路靠它认人，stdio 这条路根本用不到。
+#: 模板里写错一句，人就会去 SFW 里找一个不存在的登记表单——照着做不成的话不如不写。
+BEARER_NOTE_SYSTEM = (
+    "SFW 调用本组件时要带的口令：安装时生成，逐格填进 SFW「添加服务器」的认证凭据；"
+    "改了这里要重新登记。"
+)
+BEARER_NOTE_USER = (
+    "插件形态用不到这一项：引擎直接用 stdio 把组件拉起来，没有端口也没有登记表单。"
+    "留着是给另一种装法（HTTP 常驻）用的，你不用管它。"
+)
+
 
 def user_shops_command() -> str:
     """插件形态下列店铺的那行命令。tag 取当前真正跑着的包版本，不写死。
@@ -483,7 +494,7 @@ _TEMPLATE = """\
 organization_id = "{organization_id}"
 connection_id = "{connection_id}"
 
-# SFW 调用本组件时要带的口令：安装时生成，粘进 SFW 登记 JSON 的 secret；改了这里要重新登记。
+# {bearer_note}
 sfw_bearer = "{sfw_bearer}"
 
 # 产物目录与运行记录；路径里不能有空格。
@@ -536,6 +547,7 @@ def render_config_template(
     run_log_path: Path = DEFAULT_RUN_LOG,
     header: str = TEMPLATE_HEADER_SYSTEM,
     shops_cmd: str = SHOPS_CMD_SYSTEM,
+    bearer_note: str = BEARER_NOTE_SYSTEM,
 ) -> str:
     """安装时写下的初始配置：[lingxing] 留空、[[stores]] 只有注释示例、门槛取缺省。
 
@@ -545,6 +557,7 @@ def render_config_template(
     return _TEMPLATE.format(
         header=header,
         shops_cmd=shops_cmd,
+        bearer_note=bearer_note,
         organization_id=organization_id,
         connection_id=connection_id,
         sfw_bearer=sfw_bearer,

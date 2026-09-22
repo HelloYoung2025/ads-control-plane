@@ -14,7 +14,12 @@ import tomllib
 from pathlib import Path
 
 from ads_control_plane.sfw import plugin
-from ads_control_plane.sfw.config import USER_CONFIG_PATH, USER_EXPORT_DIR
+from ads_control_plane.sfw.config import (
+    BEARER_NOTE_SYSTEM,
+    SHOPS_CMD_SYSTEM,
+    USER_CONFIG_PATH,
+    USER_EXPORT_DIR,
+)
 
 REPO = Path(__file__).resolve().parents[2]
 PLUGIN_DIR = REPO / "plugins" / "amazon-ads"
@@ -40,6 +45,10 @@ def test_first_run_writes_a_0600_template_with_the_users_own_paths(tmp_path: Pat
     assert "sudo" not in text
     assert str(USER_EXPORT_DIR) in text
     assert "/Library/Application Support/amazon-ads" not in text
+    # 模板里每一句都得是这个形态下照着能做完的。系统形态那两句在插件形态下是死路：
+    # 没有装 amazon-ads 这条命令，也没有「添加服务器」那张表单。
+    assert SHOPS_CMD_SYSTEM not in text
+    assert BEARER_NOTE_SYSTEM not in text
     assert tomllib.loads(text)["lingxing"] == {"url": "", "key": ""}
 
 
