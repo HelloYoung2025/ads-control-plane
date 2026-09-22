@@ -38,6 +38,14 @@ from ads_control_plane.strategies.negation import (
 if TYPE_CHECKING:  # 只要类型：service 在运行期 import 本模块，反向只能是注解
     from ads_control_plane.sfw.service import StoreRun
 
+#: 报表表格里最多列几个候选。这**不是**冻结上限：CSV 与冻结集合恒含全部候选。
+#: 它此前是冻结上限（搬自同日删除的即席上限），于是第 201 个候选在任何一次运行里都
+#: 拿不到，而报表还写着「处理完这批，再敲 /fd」——那句话暗含一个没验过的假设：
+#: 上游的 targeted_type=not_negatived 会在人加完否定词后把这批排掉。假设不成立时，
+#: 那些词就是永远拿不到（2026-09-22 Codex 合入前复审 P2）。改成只截表格，不截数据：
+#: 人要执行的是 CSV，它给全；表格是给人看的，200 行足够看。
+MAX_CANDIDATES_IN_TABLE = 200
+
 #: 运行记录的表头，固定；追加时不再写。
 RUN_LOG_HEADER = (
     "时间",
@@ -215,14 +223,23 @@ def render_report_html(run: StoreRun) -> str:
         )
         + "</p>",
     ]
-    if run.truncated_from is not None:
-        parts.append(
-            f"<p class='note'>本次命中 {run.truncated_from} 个候选，这里与 CSV 只列了花费最高的 "
-            f"{len(candidates)} 个；其余的这次没有列出来，处理完这批，"
-            "敲 /new 回车，再敲 /fd 回车回车。</p>"
+    shown = candidates
+    if len(candidates) > MAX_CANDIDATES_IN_TABLE:
+        # 只截表格，不截数据。并列按外部 ID + 词文本定序：上游行序不稳定，
+        # 靠它决定谁上表会让同一份数据两次渲出不同的表。
+        shown = tuple(
+            sorted(
+                candidates,
+                key=lambda c: (-c.evidence.spend.amount, c.scope.entity_external_id, c.search_term),
+            )[:MAX_CANDIDATES_IN_TABLE]
         )
-    if candidates:
-        parts.append(f"<h2>要否定的词（{len(candidates)}）</h2>")
+        parts.append(
+            f"<p class='note'>本次命中 {len(candidates)} 个候选，下表只列了花费最高的 "
+            f"{len(shown)} 个；<strong>CSV 里是全部 {len(candidates)} 个</strong>，"
+            "交给领星的是 CSV，不是这张表。</p>"
+        )
+    if shown:
+        parts.append(f"<h2>要否定的词（表里 {len(shown)} / 共 {len(candidates)}）</h2>")
         parts.append(
             _table(
                 (
@@ -236,7 +253,7 @@ def render_report_html(run: StoreRun) -> str:
                     "统计区间",
                     "数据时点",
                 ),
-                (_candidate_row(c) for c in candidates),
+                (_candidate_row(c) for c in shown),
             )
         )
         defused = [c.search_term for c in candidates if c.search_term[:1] in FORMULA_LEADERS]
@@ -245,7 +262,7 @@ def render_report_html(run: StoreRun) -> str:
             parts.append(
                 f"<p class='note'>有 {len(defused)} 个词以 = + - @ 这类字符开头（{listed}）。"
                 "CSV 里它们前面多了一个单引号（公式引导符中和），防止表格软件把顾客搜索词当公式"
-                "执行；去领星添加否定词时按上表显示的原词输入，不要带那个引号。</p>"
+                "执行；去领星添加否定词时按 CSV 里的原词输入，不要带那个引号。</p>"
             )
     asins = [a for a in result.abstains if a.reason is AbstainReason.ASIN_NOT_A_KEYWORD]
     if asins:

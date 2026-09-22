@@ -37,7 +37,11 @@ from ads_control_plane.canonical.entity import (
 from ads_control_plane.canonical.money import Money
 from ads_control_plane.sfw import server as server_module
 from ads_control_plane.sfw.config import ConfigError, StoreConfig, parse_config
-from ads_control_plane.sfw.report import RUN_LOG_HEADER, file_stem
+from ads_control_plane.sfw.report import (
+    MAX_CANDIDATES_IN_TABLE,
+    RUN_LOG_HEADER,
+    file_stem,
+)
 from ads_control_plane.sfw.server import (
     DISCIPLINE,
     INSTRUCTIONS,
@@ -48,7 +52,6 @@ from ads_control_plane.sfw.server import (
     build_server,
 )
 from ads_control_plane.sfw.service import (
-    MAX_CANDIDATES_PER_RUN,
     RunOutcome,
     StoreRun,
     run_all,
@@ -579,26 +582,38 @@ def test_html_report_is_self_contained(tmp_path: Path) -> None:
     assert f"统计 2026-08-18 到 {WINDOW_LAST_DAY}（最后几天的订单还没结算完，不算进来）" in html
 
 
-def test_more_than_200_candidates_are_truncated_by_spend_and_said_so(tmp_path: Path) -> None:
+def test_every_candidate_reaches_the_csv_and_only_the_table_is_cut(tmp_path: Path) -> None:
+    """第 201 个候选必须拿得到。
+
+    2026-09-22 Codex 合入前复审 P2：200 此前是**冻结**上限，于是第 201 个候选在任何一次
+    运行里都不出现，而报表写着「处理完这批，再敲 /fd」——那句话暗含一个没验过的假设
+    （上游 targeted_type=not_negatived 会在人加完否定词后把这批排掉）。假设不成立时那些
+    词就是永远拿不到。现在只截表格：人拿去执行的是 CSV，它恒含全部候选。
+    """
     cfg = parse_config(config_text(tmp_path, [US], min_spend=('USD = "20.00"',)))
     source = MockSearchTermSource()
     source.seed(
         US_PROFILE,
         [
             record(US_PROFILE, f"word {i}", ad_group=f"ag-{i:03d}", spend=f"{20 + i}.00")
-            for i in range(MAX_CANDIDATES_PER_RUN + 1)
+            for i in range(MAX_CANDIDATES_IN_TABLE + 1)
         ],
     )
     run = run_all(cfg, source, now=NOW)[0]
-    assert run.truncated_from == MAX_CANDIDATES_PER_RUN + 1
     assert run.candidate_set is not None and run.csv_path is not None and run.html_path is not None
     kept = {c.search_term for c in run.candidate_set.candidates}
-    assert len(kept) == MAX_CANDIDATES_PER_RUN and "word 0" not in kept, "最便宜的那个被截掉"
-    assert run.candidate_set.truncated_from == MAX_CANDIDATES_PER_RUN + 1
+    assert len(kept) == MAX_CANDIDATES_IN_TABLE + 1, "冻结集合不截断：CSV 要给全"
+    assert "word 0" in kept, "最便宜的那个也在里面——它此前被永久截掉，谁都拿不到"
+    assert run.candidate_set.truncated_from is None, "集合没被截，就不能声称被截过"
     text = summarize([run], cfg)
-    assert "要否定 200 个（本次命中 201 个，只列了花费最高的 200 个）。" in text
-    assert "本次命中 201 个候选" in run.html_path.read_text(encoding="utf-8")
-    assert len(run.csv_path.read_text(encoding="utf-8-sig").splitlines()) == 1 + 200
+    assert "要否定 201 个（报表表格只列花费最高的 200 个，CSV 里是全部）。" in text
+    html = run.html_path.read_text(encoding="utf-8")
+    assert "本次命中 201 个候选" in html and "CSV 里是全部 201 个" in html
+    table = html.split("<h2>要否定的词")[1].split("</table>")[0]
+    assert table.count("<tr>") == 1 + MAX_CANDIDATES_IN_TABLE, "表头 + 200 行"
+    assert ">word 0<" not in table, "表格按花费截，最便宜的那个不上表"
+    csv_lines = run.csv_path.read_text(encoding="utf-8-sig").splitlines()
+    assert len(csv_lines) == 1 + 201, "CSV 里必须是全部候选——这正是复审 P2 指的那条"
 
 
 # ------------------------------------------------------------------ 9. 文件名日期 = 窗口右端日

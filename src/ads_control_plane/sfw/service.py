@@ -52,11 +52,8 @@ from ads_control_plane.strategies.ports import (
     attribution_window,
 )
 
-#: 一次运行最多冻结多少个候选，超出按花费从高到低截断（搬自同日删除的即席上限）。
-#: 截断这件事本身写进报表与运行记录，不藏：人看到 200 条会以为「这就是全部浪费」。
 logger = logging.getLogger("ads_control_plane.sfw")
 
-MAX_CANDIDATES_PER_RUN = 200
 
 #: 返回文本里最多列几个 ASIN：一家店几十个时，那一行词表会把整段回答淹掉。
 MAX_ASIN_TERMS_IN_TEXT = 5
@@ -114,7 +111,6 @@ class StoreRun:
     fetch: SearchTermFetch | None = None
     result: NegationRunResult | None = None
     candidate_set: NegationCandidateSet | None = None
-    truncated_from: int | None = None
     error_code: str | None = None
     csv_path: Path | None = None
     html_path: Path | None = None
@@ -218,16 +214,6 @@ def run_store(
             fetch=fetch,
             result=result,
         )
-    truncated_from: int | None = None
-    if len(result.candidates) > MAX_CANDIDATES_PER_RUN:
-        truncated_from = len(result.candidates)
-        # 花费并列时按外部 ID + 词文本定序：上游行序不稳定，靠它决定谁进前 200
-        # 会让同一批数据两次跑出不同的内容指纹，而指纹进文件名。
-        kept = sorted(
-            result.candidates,
-            key=lambda c: (-c.evidence.spend.amount, c.scope.entity_external_id, c.search_term),
-        )
-        result = result.model_copy(update={"candidates": tuple(kept[:MAX_CANDIDATES_PER_RUN])})
     frozen = NegationCandidateSet(
         set_id=id_factory(),
         organization_id=cfg.organization_id,
@@ -237,7 +223,6 @@ def run_store(
         created_by_client_id=CLIENT_ID,
         created_by_person_id=None,
         source="AI",
-        truncated_from=truncated_from,
         asin_abstain_count=result.asin_abstain_count,
         asin_abstain_terms=tuple(_asin_terms(result)),
     ).freeze()
@@ -249,7 +234,6 @@ def run_store(
         fetch=fetch,
         result=result,
         candidate_set=frozen,
-        truncated_from=truncated_from,
     )
 
 
@@ -385,12 +369,11 @@ def _first_line(run: StoreRun) -> str:
             + "没有要否定的词。这不等于没有浪费：门槛以下的词不算。"
             + (_asin_sentence(result))
         )
-    # CANDIDATES。截断时把命中总数说出来：只印截断后的数字，人会把 200 当成全部浪费。
+    # CANDIDATES。CSV 与冻结集合恒含全部候选，所以这个数就是全部；多出来的只是
+    # 报表表格没列全，而表格是给人看的、CSV 才是拿去执行的，两者的差别要说出口。
     count = f"要否定 {len(result.candidates)} 个"
-    if run.truncated_from is not None:
-        count += (
-            f"（本次命中 {run.truncated_from} 个，只列了花费最高的 {len(result.candidates)} 个）"
-        )
+    if len(result.candidates) > report.MAX_CANDIDATES_IN_TABLE:
+        count += f"（报表表格只列花费最高的 {report.MAX_CANDIDATES_IN_TABLE} 个，CSV 里是全部）"
     return head + looked + count + "。" + _asin_sentence(result)
 
 
