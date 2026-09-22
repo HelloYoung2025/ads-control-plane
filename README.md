@@ -21,13 +21,15 @@ SFW 登记的 3600 秒，那时孩子读到的是「工具没连上」——日�
 
 ## 管理员一次性安装（10 步）
 
-1. 仓库目录里 `uv sync --frozen && uv build --wheel`（sync 建出第 2 步要用的 `.venv`），得到 `dist/ads_control_plane-*.whl`。
-2. `sudo <仓库>/.venv/bin/python -m ads_control_plane.sfw install --wheel dist/<whl> --child-user <孩子的登录名>`：建系统用户 `_amazonads`，把组件装进 `/Library/Application Support/amazon-ads/`，写配置模板，建 `/Users/Shared/amazon-ads/导出/`、LaunchDaemon、孩子的 `~/否定词/AGENTS.md`、`~/.codex/prompts/fd.md` 和桌面「否定词导出」链接，最后打印登记 JSON（第 7 步会在孩子账号里重新打印一次）。不启动服务。
-3. `sudo -e "/Library/Application Support/amazon-ads/config.toml"`：填 `[lingxing]` 的 `url` 与 `key`。`key` 在领星 ERP 后台【业务配置 → 开放接口 → MCP】里生成，不是开放平台的 appId/appSecret；它继承该账号的店铺权限。密钥只在这一处（文件属 `_amazonads`、0600，孩子的账号读不到）。
-4. `sudo amazon-ads shops`：列出可选店铺，打印可粘贴的 `[[stores]]` 段；粘进配置，给每家店起个昵称（不含空格），按币种填 `[thresholds.min_spend]`。
-5. `sudo amazon-ads doctor`：任一项不过，不进下一步。
-6. `sudo amazon-ads start`。日志在 `/Library/Application Support/amazon-ads/logs/amazon-ads.log`。
-7. **切到孩子的 macOS 账号**（苹果菜单 → 快速用户切换，用第 2 步 `--child-user` 那个登录名）：第 7–10 步都在孩子的 SFW 里做，第 1–6 步是管理员账号的终端。SFW 的 MCP 登记按登录账号存，装好的 `~/否定词`、`/fd` 与桌面链接也都在他家里。剪贴板不跨账号，第 2 步那段 JSON 带不过来，得在孩子这边重新打印：打开「终端」，先 `su - <管理员登录名>` 输管理员密码，再 `sudo amazon-ads print-registration`（孩子的账号通常不是管理员，直接 `sudo` 会被拒）。接着在 SFW「定制化 → 连接器 → 添加服务器」里，把打印出来的四行**逐格填进表单**，点「保存并连接」，状态应为「已连接」。
+1. 双击 `amazon-ads-<版本>-arm64.pkg`，一路下一步，输管理员密码。**包没签名**，第一次会被拦下：右键点它 →「打开」→「打开」。装完这台机器就有了系统用户 `_amazonads`、`/Library/Application Support/amazon-ads/`、配置模板、`/Users/Shared/amazon-ads/导出/`、LaunchDaemon 和 `/usr/local/bin/amazon-ads` 这条命令。**服务没启动，也还没有任何孩子**——那是第 5、6 步。
+   （包是 `bash packaging/build-pkg.sh` 出的，里面自带 Python 3.12，目标机器不需要装任何东西。只出 arm64；Intel 机器要在 Intel 上再跑一次这个脚本。）
+   以下命令都在**管理员账号的终端**里跑。
+2. `sudo -e "/Library/Application Support/amazon-ads/config.toml"`：填 `[lingxing]` 的 `url` 与 `key`。`key` 在领星 ERP 后台【业务配置 → 开放接口 → MCP】里生成，不是开放平台的 appId/appSecret；它继承该账号的店铺权限。密钥只在这一处（文件属 `_amazonads`、0600，孩子的账号读不到）。
+3. `sudo amazon-ads shops`：列出可选店铺，打印可粘贴的 `[[stores]]` 段；粘进配置，给每家店起个昵称（不含空格），按币种填 `[thresholds.min_spend]`。
+4. `sudo amazon-ads doctor`：任一项不过，不进下一步。
+5. `sudo amazon-ads start`。日志在 `/Library/Application Support/amazon-ads/logs/amazon-ads.log`。
+6. `sudo amazon-ads setup-child <孩子的登录名>`：只碰这个孩子的家目录，建 `~/否定词/AGENTS.md`、`~/.codex/prompts/fd.md` 和桌面「否定词导出」链接。**每多一个孩子跑一次**，第 1–5 步不用重来。
+7. **切到孩子的 macOS 账号**（苹果菜单 → 快速用户切换，用第 6 步那个登录名）：第 7–10 步都在孩子的 SFW 里做。SFW 的 MCP 登记按登录账号存，第 6 步装的东西也都在他家里。登记要填的四行在孩子这边重新打印：打开「终端」，先 `su - <管理员登录名>` 输管理员密码，再 `sudo amazon-ads print-registration`（孩子的账号通常不是管理员，直接 `sudo` 会被拒）。接着在 SFW「定制化 → 连接器 → 添加服务器」里，把打印出来的四行**逐格填进表单**，点「保存并连接」，状态应为「已连接」。
    不要用「高级配置 · 本地命令 / JSON」那个框：2026-09-22 在 1.1.0 上实测它只收本地命令（stdio）形状，粘 HTTP 形状报「MCP JSON 格式错误」。名称一格注意 macOS 会自动把首字母大写成 `Amazon-ads`，改回全小写再存。
 8. SFW 项目芯片 →「使用现有文件夹」→ 选 `~/否定词` →「打开」。
 9. 重启一次 SFW（斜杠命令只在启动时加载），然后自己照上面 4 步跑一遍。
