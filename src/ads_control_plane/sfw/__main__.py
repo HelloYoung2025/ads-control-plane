@@ -7,7 +7,6 @@ print-registration）是管理员在终端里用 sudo 跑的，全部交给 inst
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import secrets
 import shutil
@@ -93,8 +92,11 @@ def _install(args: argparse.Namespace) -> int:
     installer.execute(steps, dry_run=args.dry_run)
     payload = installer.registration_json(_SECRET_AFTER_INSTALL if args.dry_run else bearer)
     print()
-    print("粘进 SFW「MCP → 添加服务器 → 高级配置 · 本地命令 / JSON」的登记 JSON：")
-    print(json.dumps(payload, ensure_ascii=False))
+    print("在 SFW「定制化 → 连接器 → 添加服务器」里逐格填（第 7 步会在孩子账号里再打印一次）：")
+    print(f"  名称      {payload['name']}")
+    print(f"  服务地址   {payload['url']}")
+    print("  认证方式   Bearer Token")
+    print(f"  认证凭据   {payload['secret']}")
     print()
     print(f"下一步：sudo -e '{DEFAULT_CONFIG_PATH}' 填 [lingxing]；")
     print("sudo amazon-ads shops；把打印的 [[stores]] 段粘进配置；")
@@ -147,7 +149,15 @@ def _doctor(args: argparse.Namespace) -> int:
 
 def _print_registration(args: argparse.Namespace) -> int:
     bearer = installer.read_sfw_bearer(Path(args.config), expect_uid=installer.service_uid())
-    print(json.dumps(installer.registration_json(bearer, port=args.port), ensure_ascii=False))
+    payload = installer.registration_json(bearer, port=args.port)
+    # 逐字段打印，因为 SFW 1.0.8 没有能吃下 HTTP 形状 JSON 的输入框（2026-09-22 实测）：
+    # 管理员是把这三行抄进「添加服务器」的表单，不是粘一段 JSON。
+    print("在 SFW「定制化 → 连接器 → 添加服务器」里逐格填：")
+    print(f"  名称      {payload['name']}")
+    print(f"  服务地址   {payload['url']}")
+    print("  认证方式   Bearer Token")
+    print(f"  认证凭据   {payload['secret']}")
+    print("填完点「保存并连接」，状态要变成「已连接」。")
     return 0
 
 

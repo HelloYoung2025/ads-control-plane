@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import ast
 import contextlib
-import json
 import os
 import plistlib
 import re
@@ -1009,9 +1008,13 @@ def test_install_dry_run_prints_the_plan_and_a_placeholder_secret(
     out = capsys.readouterr().out
     assert "不存在，将建（uid 取 205）" in out and "将写模板" in out
     assert "[干跑]" in out and "UniqueID 205" in out
-    payload = json.loads(next(line for line in out.splitlines() if line.startswith("{")))
-    assert set(payload) == REGISTRATION_KEYS
-    assert payload["secret"] == "<安装后用 sudo amazon-ads print-registration 查看>"
+    # 逐格打印，不是一段可粘贴的 JSON：SFW 1.0.8 没有吃 HTTP 形状 JSON 的输入框（2026-09-22 实测）。
+    assert "{" not in out
+    expected = registration_json("<安装后用 sudo amazon-ads print-registration 查看>")
+    assert f"名称      {expected['name']}" in out
+    assert f"服务地址   {expected['url']}" in out
+    assert "认证方式   Bearer Token" in out
+    assert f"认证凭据   {expected['secret']}" in out
     assert list(home.iterdir()) == []
 
     monkeypatch.setattr(os, "geteuid", lambda: 501)
@@ -1025,8 +1028,14 @@ def test_print_registration_reads_the_bearer_from_the_config(
 ) -> None:
     monkeypatch.setattr(installer, "service_uid", os.getuid)
     assert cli.main(["print-registration", "--config", str(private_config)]) == 0
-    payload = json.loads(capsys.readouterr().out)
-    assert payload == registration_json(BEARER)
+    out = capsys.readouterr().out
+    # 同上：管理员抄的是这四行，不是一段 JSON。
+    assert "{" not in out
+    expected = registration_json(BEARER)
+    assert f"名称      {expected['name']}" in out
+    assert f"服务地址   {expected['url']}" in out
+    assert "认证方式   Bearer Token" in out
+    assert f"认证凭据   {expected['secret']}" in out
     os.chmod(private_config, 0o640)
     assert cli.main(["print-registration", "--config", str(private_config)]) == 1
     assert "0640" in capsys.readouterr().err
