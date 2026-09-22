@@ -40,6 +40,62 @@ def _serve(args: argparse.Namespace) -> int:
     return 0
 
 
+def _bootstrap(args: argparse.Namespace) -> int:
+    """.pkg 的 postinstall 调这条：代码已由包铺好，只做①③～⑥。
+
+    和 install 的唯一区别是不建 python/venv（包里已经有）、不碰任何孩子的家目录——
+    装包的时候还不知道孩子是谁，那一半留给 setup-child。
+    """
+    try:
+        host = installer.inspect_host(config_path=DEFAULT_CONFIG_PATH)
+    except InstallerError as exc:
+        if not args.dry_run:
+            raise
+        print(f"注意：{exc}；干跑按「{SERVICE_USER} 不存在」拟计划", file=sys.stderr)
+        host = installer.HostState(config_exists=DEFAULT_CONFIG_PATH.exists())
+    if host.config_exists and not args.dry_run:
+        bearer = installer.read_sfw_bearer(DEFAULT_CONFIG_PATH, expect_uid=None)
+    else:
+        bearer = secrets.token_hex(16)
+    steps = installer.plan_system(
+        wheel=None,
+        uv=None,
+        sfw_bearer=bearer,
+        organization_id=uuid.uuid4(),
+        connection_id=uuid.uuid4(),
+        host=host,
+    )
+    installer.execute(steps, dry_run=args.dry_run)
+    if args.dry_run:
+        print("以上只是计划，什么都没做。")
+        return 0
+    print(
+        f"系统这一半装好了。config.toml：{'已存在，保留内容' if host.config_exists else '已写模板'}"
+    )
+    print(f"下一步：sudo -e '{DEFAULT_CONFIG_PATH}' 填 [lingxing]；")
+    print("sudo amazon-ads shops；把打印的 [[stores]] 段粘进配置；")
+    print("sudo amazon-ads doctor 全过之后 sudo amazon-ads start；")
+    print("最后 sudo amazon-ads setup-child <孩子的登录名>。")
+    return 0
+
+
+def _setup_child(args: argparse.Namespace) -> int:
+    """孩子那一半：项目文件夹、/fd、桌面链接。每多一个孩子跑一次。"""
+    child_home = (
+        Path(args.child_home).resolve() if args.child_home else installer.home_of(args.child_user)
+    )
+    installer.execute(
+        installer.plan_child(child_user=args.child_user, child_home=child_home),
+        dry_run=args.dry_run,
+    )
+    if args.dry_run:
+        print("以上只是计划，什么都没做。")
+        return 0
+    print(f"{args.child_user} 的家目录布置好了：~/否定词/AGENTS.md、/fd、桌面「否定词导出」。")
+    print("接着切到他的账号，按 README 第 7–10 步在他的 SFW 里登记与培训。")
+    return 0
+
+
 def _find_uv(explicit: str | None) -> Path:
     if explicit:
         return Path(explicit).resolve()
@@ -168,6 +224,8 @@ _HANDLERS: dict[str, Callable[[argparse.Namespace], int]] = {
     "stop": _stop,
     "shops": _shops,
     "doctor": _doctor,
+    "bootstrap": _bootstrap,
+    "setup-child": _setup_child,
     "print-registration": _print_registration,
 }
 
@@ -190,7 +248,17 @@ def _build_parser() -> argparse.ArgumentParser:
         help="config.toml 必须属于这个 uid（缺省：本进程的 uid）",
     )
 
-    install = commands.add_parser("install", help="装成 _amazonads 名下的 LaunchDaemon（要 sudo）")
+    bootstrap = commands.add_parser(
+        "bootstrap", help="安装包用：代码已铺好，只建用户/配置/目录/LaunchDaemon（要 sudo）"
+    )
+    bootstrap.add_argument("--dry-run", action="store_true", help="只打印计划，不做任何事")
+
+    child = commands.add_parser("setup-child", help="布置一个孩子的家目录（要 sudo）")
+    child.add_argument("child_user", help="孩子的 macOS 登录名")
+    child.add_argument("--child-home", help="孩子的家目录（缺省按登录名查）")
+    child.add_argument("--dry-run", action="store_true", help="只打印计划，不做任何事")
+
+    install = commands.add_parser("install", help="从仓库一把装完（要 sudo）")
     install.add_argument("--wheel", required=True, help="uv build --wheel 打出来的 .whl")
     install.add_argument("--child-user", required=True, help="孩子的 macOS 登录名")
     install.add_argument("--child-home", help="孩子的家目录（缺省按登录名查）")

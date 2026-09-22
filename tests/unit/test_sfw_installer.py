@@ -52,9 +52,11 @@ from ads_control_plane.sfw.installer import (
     judge_port,
     judge_registration,
     judge_service_user,
+    plan_child,
     plan_install,
     plan_start,
     plan_stop,
+    plan_system,
     registration_json,
     render_plist,
     render_shops,
@@ -1008,7 +1010,8 @@ def test_install_dry_run_prints_the_plan_and_a_placeholder_secret(
     out = capsys.readouterr().out
     assert "不存在，将建（uid 取 205）" in out and "将写模板" in out
     assert "[干跑]" in out and "UniqueID 205" in out
-    # 逐格打印，不是一段可粘贴的 JSON：SFW 没有吃 HTTP 形状 JSON 的输入框（2026-09-22 在 1.1.0 上实测）。
+    # 逐格打印，不是一段可粘贴的 JSON：SFW 没有吃 HTTP 形状 JSON 的输入框
+    # （2026-09-22 在 1.1.0 上实测）。
     assert "{" not in out
     expected = registration_json("<安装后用 sudo amazon-ads print-registration 查看>")
     assert f"名称      {expected['name']}" in out
@@ -1080,3 +1083,56 @@ def test_a_registered_daemon_with_nobody_listening_is_a_failure_not_a_green_chec
     assert judge_port("free", 8790, daemon_registered=False)[1] is True, (
         "还没 start 的时候，端口空闲就该是通过——这条路不能被上面那条压掉"
     )
+
+
+def test_the_package_path_skips_exactly_the_three_uv_commands_and_nothing_else() -> None:
+    """.pkg 已经铺好 python/ 与 venv/，②那三条 uv 命令就不该再跑——但只有那三条。
+
+    钉这条是因为「少跑几步」最容易顺手少建一个目录或少改一次属主，而那种缺口
+    要等到 doctor 或运行期才暴露。这里逐步比对：两条路径的差集必须恰好是三个 run。
+    """
+    common = {
+        "sfw_bearer": "0" * 32,
+        "organization_id": uuid.UUID(int=1),
+        "connection_id": uuid.UUID(int=2),
+    }
+    from_repo = plan_system(wheel=Path("/tmp/w.whl"), uv=Path("/opt/uv/bin/uv"), **common)
+    from_pkg = plan_system(wheel=None, uv=None, **common)
+    skipped = [s for s in from_repo if s not in from_pkg]
+    assert [s.kind for s in skipped] == ["run", "run", "run"]
+    assert tuple(s for s in from_repo if s.kind != "run" or s in from_pkg) == from_pkg
+
+
+def test_wheel_and_uv_must_be_given_together_or_not_at_all() -> None:
+    """给一个不给另一个会装出一个「有 venv 目录、没 venv 内容」的半成品，直接拒绝。"""
+    common = {
+        "sfw_bearer": "0" * 32,
+        "organization_id": uuid.UUID(int=1),
+        "connection_id": uuid.UUID(int=2),
+    }
+    for wheel, uv in ((Path("/tmp/w.whl"), None), (None, Path("/opt/uv/bin/uv"))):
+        with pytest.raises(InstallerError, match="要么都给"):
+            plan_system(wheel=wheel, uv=uv, **common)
+
+
+def test_install_is_exactly_system_then_child() -> None:
+    """一把装 = 两半相接。两条路径共用同一份步骤定义，不许各写一份。"""
+    common = {
+        "sfw_bearer": "0" * 32,
+        "organization_id": uuid.UUID(int=1),
+        "connection_id": uuid.UUID(int=2),
+    }
+    wheel, uv = Path("/tmp/w.whl"), Path("/opt/uv/bin/uv")
+    assert plan_install(
+        wheel=wheel, uv=uv, child_user="kid", child_home=Path("/Users/kid"), **common
+    ) == plan_system(wheel=wheel, uv=uv, **common) + plan_child(
+        child_user="kid", child_home=Path("/Users/kid")
+    )
+
+
+def test_child_half_only_touches_that_child_home() -> None:
+    """孩子那半不许碰家目录以外的任何路径——它会以孩子的属主写文件。"""
+    home = Path("/Users/kid")
+    for step in plan_child(child_user="kid", child_home=home):
+        assert step.path is not None
+        assert home in step.path.parents or step.path == home, step

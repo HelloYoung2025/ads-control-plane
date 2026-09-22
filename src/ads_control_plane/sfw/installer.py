@@ -300,12 +300,10 @@ def _config_text(
     return re.sub(r'^run_log_path = ".*"$', f'run_log_path = "{run_log}"', text, flags=re.M)
 
 
-def plan_install(
+def plan_system(
     *,
-    wheel: Path,
-    child_user: str,
-    child_home: Path,
-    uv: Path,
+    wheel: Path | None,
+    uv: Path | None,
     root: Path = DEFAULT_ROOT,
     export_dir: Path = DEFAULT_EXPORT_DIR,
     sfw_bearer: str,
@@ -313,18 +311,25 @@ def plan_install(
     connection_id: uuid.UUID,
     host: HostState = _FRESH_HOST,
 ) -> tuple[Step, ...]:
-    """计划 §1.2 第 2 步的 ①～⑦（⑧ 打印登记 JSON 由 __main__ 在执行后做）。纯函数。"""
-    for name, path in (("wheel", wheel), ("child_home", child_home), ("uv", uv), ("root", root)):
+    """①～⑥：系统这一半，与孩子是谁无关，一台机器只做一次。纯函数。
+
+    wheel 与 uv 只被②那三条 uv 命令用到，所以要么都给、要么都不给：
+    - 都给 = 从仓库装（`uv build --wheel` 之后），②当场装 Python、建 venv、装 wheel；
+    - 都不给 = .pkg 已经把 python/ 与 venv/ 铺进 root，②那三步跳过。
+    混着给只会得到一个装了一半的计划，所以直接拒绝，不猜。
+    """
+    if (wheel is None) != (uv is None):
+        raise InstallerError("wheel 与 uv 要么都给（从仓库装），要么都不给（安装包已铺好代码）")
+    paths: list[tuple[str, Path]] = [("root", root)]
+    if wheel is not None and uv is not None:
+        paths += [("wheel", wheel), ("uv", uv)]
+    for name, path in paths:
         if not path.is_absolute():
             raise InstallerError(f"{name} 要是绝对路径：{path}")
-    if wheel.suffix != ".whl":
+    if wheel is not None and wheel.suffix != ".whl":
         raise InstallerError(f"--wheel 要指向 uv build --wheel 打出来的 .whl 文件：{wheel}")
-    if not re.fullmatch(r"[A-Za-z0-9._-]+", child_user):
-        raise InstallerError(f"孩子的登录名不像 macOS 用户名：{child_user!r}")
     if not re.fullmatch(r"[0-9A-Fa-f]{32,}", sfw_bearer):
         raise InstallerError("sfw_bearer 要是至少 32 位的十六进制串")
-    if not PROMPT_NAME_RE.fullmatch(PROMPT_FILE):
-        raise InstallerError(f"斜杠命令文件名必须是 ASCII：{PROMPT_FILE}")
 
     service = f"{SERVICE_USER}:{SERVICE_USER}"
     python_dir = root / "python"
@@ -342,45 +347,50 @@ def plan_install(
         _mkdir(root, "root:wheel", 0o755, "组件的家：代码、venv、config、日志都在这"),
         _mkdir(python_dir, "root:wheel", 0o755, "uv 托管的 Python 放这里，不碰系统 Python"),
         _mkdir(log_dir, service, 0o755, "LaunchDaemon 的 stdout/stderr 落这里；服务自己能写"),
-        _run(
-            (
-                str(uv),
-                "--no-config",
-                "python",
-                "install",
-                "--install-dir",
-                str(python_dir),
-                PYTHON_VERSION,
-            ),
-            f"装 Python {PYTHON_VERSION}（uv 托管版）",
-        ),
-        _run(
-            (
-                ENV,
-                f"UV_PYTHON_INSTALL_DIR={python_dir}",
-                str(uv),
-                "--no-config",
-                "venv",
-                "--managed-python",
-                "--python",
-                PYTHON_VERSION,
-                str(venv),
-            ),
-            "建 venv，解释器只认上一步装的那份",
-        ),
-        _run(
-            (
-                str(uv),
-                "--no-config",
-                "pip",
-                "install",
-                "--python",
-                str(venv / "bin" / "python"),
-                str(wheel),
-            ),
-            "把组件 wheel 装进 venv",
-        ),
     ]
+    #    .pkg 已经把 python/ 与 venv/ 原样铺进 root 时，下面这三条不跑：包里那份是在
+    #    打包机上以同一个绝对路径建的（venv 用 --relocatable），到这台机器上直接可用。
+    if wheel is not None and uv is not None:
+        steps += [
+            _run(
+                (
+                    str(uv),
+                    "--no-config",
+                    "python",
+                    "install",
+                    "--install-dir",
+                    str(python_dir),
+                    PYTHON_VERSION,
+                ),
+                f"装 Python {PYTHON_VERSION}（uv 托管版）",
+            ),
+            _run(
+                (
+                    ENV,
+                    f"UV_PYTHON_INSTALL_DIR={python_dir}",
+                    str(uv),
+                    "--no-config",
+                    "venv",
+                    "--managed-python",
+                    "--python",
+                    PYTHON_VERSION,
+                    str(venv),
+                ),
+                "建 venv，解释器只认上一步装的那份",
+            ),
+            _run(
+                (
+                    str(uv),
+                    "--no-config",
+                    "pip",
+                    "install",
+                    "--python",
+                    str(venv / "bin" / "python"),
+                    str(wheel),
+                ),
+                "把组件 wheel 装进 venv",
+            ),
+        ]
 
     # ③ config：新装写模板（随机口令、内部身份）；已存在只校正属主与权限，内容一字不动。
     if host.config_exists:
@@ -446,6 +456,20 @@ def plan_install(
             "管理员命令：sudo amazon-ads shops/doctor/start",
         ),
     ]
+    return tuple(steps)
+
+
+def plan_child(
+    *, child_user: str, child_home: Path, export_dir: Path = DEFAULT_EXPORT_DIR
+) -> tuple[Step, ...]:
+    """⑦：孩子那一半。每多一个孩子跑一次，和系统那半没有任何依赖。纯函数。"""
+    if not child_home.is_absolute():
+        raise InstallerError(f"child_home 要是绝对路径：{child_home}")
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", child_user):
+        raise InstallerError(f"孩子的登录名不像 macOS 用户名：{child_user!r}")
+    if not PROMPT_NAME_RE.fullmatch(PROMPT_FILE):
+        raise InstallerError(f"斜杠命令文件名必须是 ASCII：{PROMPT_FILE}")
+    steps: list[Step] = []
     # ⑦ 孩子的家目录只放三样：项目文件夹里的 AGENTS.md、斜杠命令、桌面上指向导出目录的链接。
     project_dir = child_home / PROJECT_DIR
     prompts_dir = child_home / ".codex" / "prompts"
@@ -472,6 +496,32 @@ def plan_install(
     ]
 
     return tuple(steps)
+
+
+def plan_install(
+    *,
+    wheel: Path,
+    child_user: str,
+    child_home: Path,
+    uv: Path,
+    root: Path = DEFAULT_ROOT,
+    export_dir: Path = DEFAULT_EXPORT_DIR,
+    sfw_bearer: str,
+    organization_id: uuid.UUID,
+    connection_id: uuid.UUID,
+    host: HostState = _FRESH_HOST,
+) -> tuple[Step, ...]:
+    """从仓库一把装完：①～⑥ 接 ⑦。.pkg 走的是 plan_system + plan_child 两步。"""
+    return plan_system(
+        wheel=wheel,
+        uv=uv,
+        root=root,
+        export_dir=export_dir,
+        sfw_bearer=sfw_bearer,
+        organization_id=organization_id,
+        connection_id=connection_id,
+        host=host,
+    ) + plan_child(child_user=child_user, child_home=child_home, export_dir=export_dir)
 
 
 def plan_start(*, loaded: bool, plist_path: Path = PLIST_PATH) -> tuple[Step, ...]:
