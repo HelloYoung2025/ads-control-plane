@@ -150,7 +150,7 @@ def _doctor(args: argparse.Namespace) -> int:
 def _print_registration(args: argparse.Namespace) -> int:
     bearer = installer.read_sfw_bearer(Path(args.config), expect_uid=installer.service_uid())
     payload = installer.registration_json(bearer, port=args.port)
-    # 逐字段打印，因为 SFW 1.0.8 没有能吃下 HTTP 形状 JSON 的输入框（2026-09-22 实测）：
+    # 逐字段打印，因为 SFW 没有能吃下 HTTP 形状 JSON 的输入框（2026-09-22 在 1.1.0 上实测）：
     # 管理员是把这三行抄进「添加服务器」的表单，不是粘一段 JSON。
     print("在 SFW「定制化 → 连接器 → 添加服务器」里逐格填：")
     print(f"  名称      {payload['name']}")

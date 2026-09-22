@@ -147,10 +147,10 @@ def read_asset(name: str) -> str:
 def registration_json(sfw_bearer: str, *, port: int = DEFAULT_PORT) -> dict[str, str | int]:
     """登记这台服务器要填的取值。键闭集见 REGISTRATION_KEYS。
 
-    2026-09-22 真机实测更正：这不是一段可以整体粘贴的 JSON。SFW 1.0.8 的
+    2026-09-22 真机实测更正（SFW 1.1.0 构建 10015）：这不是一段可以整体粘贴的 JSON。它的
     「高级配置 · 本地命令 / JSON」只收 stdio 形状（name/command/args），粘 HTTP 形状
     直接报「MCP JSON 格式错误」。HTTP 服务器必须把 name/url/auth/secret 逐个填进
-    「添加服务器」那四个表单字段。tool_timeout_sec 在 1.0.8 的表单里**没有对应字段**，
+    「添加服务器」那四个表单字段。tool_timeout_sec 在它的表单里**没有对应字段**，
     填不进去，实际用的是 SFW 的默认值——这个常量今天只用于自检，不构成宿主行为。
     """
     return {
