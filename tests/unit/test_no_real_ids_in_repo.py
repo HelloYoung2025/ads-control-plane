@@ -86,7 +86,20 @@ def _forbidden_tokens_in(path: Path, text: str) -> list[str]:
     return found
 
 
-SCANNED_SUFFIXES = {".py", ".md", ".json", ".js", ".html", ".toml", ".yaml", ".yml", ".example"}
+# .sh 是 2026-09-22 补的：出包脚本里写了公司域名当 bundle id，这条守卫因为不扫 .sh 而
+# 漏过去了，差一步就推进公开仓库。守卫挡不住的文件类型等于守卫不存在。
+SCANNED_SUFFIXES = {
+    ".py",
+    ".md",
+    ".json",
+    ".js",
+    ".html",
+    ".toml",
+    ".yaml",
+    ".yml",
+    ".example",
+    ".sh",
+}
 SKIP_DIRS = {
     ".git",
     ".claude",  # Claude Code 的 worktree 会建在仓库内；那是别的检出，不归这条守卫扫
