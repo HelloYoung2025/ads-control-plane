@@ -1008,7 +1008,7 @@ def test_install_dry_run_prints_the_plan_and_a_placeholder_secret(
     out = capsys.readouterr().out
     assert "不存在，将建（uid 取 205）" in out and "将写模板" in out
     assert "[干跑]" in out and "UniqueID 205" in out
-    # 逐格打印，不是一段可粘贴的 JSON：SFW 1.0.8 没有吃 HTTP 形状 JSON 的输入框（2026-09-22 实测）。
+    # 逐格打印，不是一段可粘贴的 JSON：SFW 没有吃 HTTP 形状 JSON 的输入框（2026-09-22 在 1.1.0 上实测）。
     assert "{" not in out
     expected = registration_json("<安装后用 sudo amazon-ads print-registration 查看>")
     assert f"名称      {expected['name']}" in out
