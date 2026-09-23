@@ -249,10 +249,16 @@ def run_all(
     monotonic: Callable[[], float] = time.monotonic,
     id_factory: Callable[[], uuid.UUID] = new_canonical_id,
 ) -> tuple[StoreRun, ...]:
-    """按店铺表顺序逐店跑；每店跑完立即落盘并追加运行记录。
+    """逐店跑；每店跑完立即落盘并追加运行记录。返回的顺序恒为店铺表顺序。
 
     预算在每家店**开跑前**检查：第一家永远会跑，用尽后其余店一律 NOT_RUN。
     不在跑到一半时中断——半家店的文件比没有文件更坏。
+
+    **跑的先后按「最久没轮到的先跑」**，依据是运行记录（2026-09-23 Codex 复审 P2）：
+    此前每次都按店铺表从头跑，预算不够时排在后面的店每一次都是 NOT_RUN，「开个新对话
+    再问一次」永远推不到它们——而插件形态下取数缓存跟着进程走，新对话里前面那些店又得
+    重拉一遍。从没轮到过的排最前（保持店铺表顺序）。运行记录读不懂就按店铺表顺序并写
+    一行 WARNING：先后错了只是少推进一轮，不该让整次运行失败。
 
     于是预算**不是**整次调用的上界：最后开跑的那家店整个跑在预算之外。网关退化时
     单店可以跑很久（每页两次往返、每次 60 秒超时、最多 20 页），整次调用就可能越过
@@ -263,7 +269,7 @@ def run_all(
     """
     started = monotonic()
     runs: list[StoreRun] = []
-    for store in cfg.stores:
+    for store in _longest_waiting_first(cfg):
         if monotonic() - started >= cfg.time_budget_seconds:
             run = StoreRun(
                 store=store,
@@ -286,7 +292,18 @@ def run_all(
             elapsed,
             cfg.time_budget_seconds,
         )
-    return tuple(runs)
+    # 回答按店铺表顺序念：人每次都在同一个位置找同一家店。运行记录保持真实的先后。
+    position = {store.nickname: i for i, store in enumerate(cfg.stores)}
+    return tuple(sorted(runs, key=lambda run: position[run.store.nickname]))
+
+
+def _longest_waiting_first(cfg: PackConfig) -> list[StoreConfig]:
+    turns = report.last_turns(cfg.run_log_path)
+    if turns is None:
+        logger.warning("运行记录 %s 读不懂，这次按店铺表顺序跑", cfg.run_log_path)
+        return list(cfg.stores)
+    never = datetime.min.replace(tzinfo=UTC)
+    return sorted(cfg.stores, key=lambda store: turns.get(store.nickname, never))
 
 
 # ------------------------------------------------------------------ 给人看的话

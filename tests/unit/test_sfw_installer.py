@@ -1113,6 +1113,23 @@ def test_shops_and_doctor_commands_use_the_service_uid_and_exit_codes(
     assert "[失败] 配置文件私有" in out and "先修好再 start" in out
 
 
+def test_shops_checks_a_personal_config_against_whoever_runs_it(
+    private_config: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """两种装法并存（_amazonads 存在）时，插件那条 shops 命令验的是个人配置，属主是跑命令的
+    人；系统配置仍按服务账号验（2026-09-23 Codex 复审 P2）。"""
+    monkeypatch.setattr(installer, "service_uid", lambda: os.getuid() + 1)
+    monkeypatch.setattr(installer, "LxMcpReadClient", FakeClient)
+    assert cli.main(["shops", "--config", str(private_config)]) == 0
+    assert "[[stores]]" in capsys.readouterr().out
+
+    monkeypatch.setattr(cli, "DEFAULT_CONFIG_PATH", private_config)
+    assert cli.main(["shops", "--config", str(private_config)]) == 1
+    assert "属主" in capsys.readouterr().err
+
+
 def test_a_registered_daemon_with_nobody_listening_is_a_failure_not_a_green_check() -> None:
     """服务死了的时候，doctor 必须说出来——否则管理员拿到一份全绿报告，下一步无处可去。
 

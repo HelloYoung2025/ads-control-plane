@@ -180,7 +180,12 @@ def _stop(args: argparse.Namespace) -> int:
 
 
 def _shops(args: argparse.Namespace) -> int:
-    print(installer.shops(Path(args.config), expect_uid=installer.service_uid()))
+    config = Path(args.config)
+    # 系统配置属 _amazonads；别的路径（插件形态的 ~/.amazon-ads/config.toml）属跑这条命令的人。
+    # 两种装法在同一台机器上并存时，拿服务账号去验个人配置，会把一份属主正确的文件判成
+    # CONFIG_WRONG_OWNER，插件那头就列不出店铺（2026-09-23 Codex 复审 P2）。
+    owner = installer.service_uid() if config == DEFAULT_CONFIG_PATH else os.getuid()
+    print(installer.shops(config, expect_uid=owner))
     return 0
 
 

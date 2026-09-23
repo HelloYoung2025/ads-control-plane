@@ -36,7 +36,9 @@ ARCH="$(uname -m | sed 's/^arm64$/aarch64/')"
 mkdir -p "$STAGE$ROOT/python"
 # 优先从本机 uv 缓存拷。每出一次包重下 56MB 没道理，而且下载一慢整条出包线就卡死——
 # 这台机器 2026-09-22 就卡了 10 分钟。拷不到才退回下载。
-CACHED="$(ls -d "$HOME/.local/share/uv/python/cpython-$PYVER".*-macos-"$ARCH"-none 2>/dev/null | head -1)"
+# `|| true`：缓存缺失时 ls 非零退出，在 set -euo pipefail 下这一行会直接终止脚本、到不了
+# 下面的下载分支——干净的打包机因此出不了包（2026-09-23 Codex 复审 P2，已复现）。
+CACHED="$(ls -d "$HOME/.local/share/uv/python/cpython-$PYVER".*-macos-"$ARCH"-none 2>/dev/null | head -1 || true)"
 if [ -n "$CACHED" ]; then
   echo "   用本机缓存 $(basename "$CACHED")"
   cp -Rp "$CACHED" "$STAGE$ROOT/python/"

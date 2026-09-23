@@ -712,6 +712,44 @@ def test_time_budget_reports_stores_not_reached(tmp_path: Path) -> None:
     ]
 
 
+def test_a_store_skipped_for_time_goes_first_next_time(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """预算只够跑一家时连问三次，三家店各轮到一次（2026-09-23 Codex 复审 P2）。
+
+    此前每次都按店铺表从头跑：排在后面的店每一次都是「没轮到」，「再问一次」永远推不到它们。
+    """
+    stores: list[Store] = [(f"p-{i}", f"s-{i}", "US", "USD", f"店0{i}") for i in (1, 2, 3)]
+    cfg = parse_config(config_text(tmp_path, stores, time_budget=60, min_spend=('USD = "20.00"',)))
+    clock = {"t": 0.0}
+
+    class SlowSource(MockSearchTermSource):
+        def fetch_search_term_performance(
+            self, profile_external_id: str, lookback_days: int, as_of: datetime
+        ) -> SearchTermFetch:
+            clock["t"] += 100.0
+            return super().fetch_search_term_performance(profile_external_id, lookback_days, as_of)
+
+    source = SlowSource()
+    for profile, *_ in stores:
+        source.seed(profile, [record(profile, "cheap widget")])
+    turns = []
+    for minute in range(3):
+        runs = run_all(
+            cfg, source, now=NOW + timedelta(minutes=minute), monotonic=lambda: clock["t"]
+        )
+        assert [run.store.nickname for run in runs] == ["店01", "店02", "店03"], "回答按店铺表念"
+        turns += [run.store.nickname for run in runs if run.outcome is not RunOutcome.NOT_RUN]
+    assert turns == ["店01", "店02", "店03"]
+
+    # 运行记录读不懂（比如被 Excel 另存成 GBK）：按店铺表顺序跑，留一行 WARNING，不失败。
+    cfg.run_log_path.write_bytes("时间,店铺,结局\n".encode("gbk"))
+    with caplog.at_level(logging.WARNING, logger="ads_control_plane.sfw"):
+        runs = run_all(cfg, source, now=NOW + timedelta(hours=1), monotonic=lambda: clock["t"])
+    assert [run.outcome for run in runs][0] is not RunOutcome.NOT_RUN
+    assert any("读不懂" in r.getMessage() for r in caplog.records)
+
+
 # ------------------------------------------------------------------ 11/12. 配置错误
 
 

@@ -360,3 +360,33 @@ def append_run_log(path: Path, run: StoreRun, *, now: datetime) -> None:
             handle.write("\ufeff")
             writer.writerow(RUN_LOG_HEADER)
         writer.writerow(row)
+
+
+def last_turns(path: Path) -> dict[str, datetime] | None:
+    """运行记录里每家店最后一次轮到（结局不是 NOT_RUN）的时间；文件不存在返回空表。
+
+    读不懂（被 Excel 另存成别的编码、表头被改）返回 None，由调用方决定怎么说——
+    它只用来排先后，读不了也不该让整次运行失败。
+    """
+    if not path.exists():
+        return {}
+    turns: dict[str, datetime] = {}
+    try:
+        with open(path, encoding="utf-8-sig", newline="") as handle:
+            reader = csv.DictReader(handle)
+            if reader.fieldnames is None or not {"时间", "店铺", "结局"} <= set(reader.fieldnames):
+                return None
+            for row in reader:
+                if row["结局"] in ("", "NOT_RUN"):
+                    continue
+                try:
+                    at = datetime.fromisoformat(row["时间"])
+                except (TypeError, ValueError):
+                    continue
+                if at.tzinfo is None:
+                    continue
+                name = row["店铺"]
+                turns[name] = max(at, turns.get(name, at))
+    except (OSError, UnicodeDecodeError, csv.Error):
+        return None
+    return turns
