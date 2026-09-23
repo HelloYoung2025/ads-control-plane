@@ -138,7 +138,12 @@ def test_the_readme_installs_the_same_version_from_the_same_marketplace() -> Non
     """
     pyproject = tomllib.loads((REPO / "pyproject.toml").read_text(encoding="utf-8"))
     version = pyproject["project"]["version"]
-    assert f"plugin marketplace add HelloYoung2025/ads-control-plane@v{version}" in README
+    add = f"plugin marketplace add HelloYoung2025/ads-control-plane@v{version}"
+    assert add in README
+    # 同一块命令兼做升级：同名市场换版本号直接 add 会报 already added from a different
+    # source（2026-09-23 实测），所以 remove 必须在 add 前面。
+    remove = f"plugin marketplace remove {MARKET['name']} 2>/dev/null"
+    assert remove in README and README.index(remove) < README.index(add)
     assert f"plugin add {MANIFEST['name']}@{MARKET['name']}" in README
     # 预热那行拉的必须是同一个 tag，否则预热的是 A 版、跑起来的是 B 版。
     assert f"ads-control-plane@v{version} amazon-ads --help" in README

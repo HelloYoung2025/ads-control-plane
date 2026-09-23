@@ -4,6 +4,7 @@
   "description": "找出亚马逊广告里花了钱却没出单的搜索词，给出可以直接否定的候选清单。只读，不改任何广告设置。",
   "author": { "name": "HelloYoung2025" },
   "repository": "https://github.com/HelloYoung2025/ads-control-plane",
+  "license": "MIT",
   "keywords": ["amazon", "ads", "negative-keywords", "ecommerce"],
   "mcpServers": "./.mcp.json",
   "skills": "./skills/",
