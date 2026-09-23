@@ -13,6 +13,9 @@ import stat
 import tomllib
 from pathlib import Path
 
+import pytest
+from mcp.server.mcpserver.exceptions import ToolError
+
 from ads_control_plane.sfw import plugin
 from ads_control_plane.sfw.config import (
     BEARER_NOTE_SYSTEM,
@@ -22,6 +25,7 @@ from ads_control_plane.sfw.config import (
     USER_EXPORT_DIR,
     parse_config,
 )
+from ads_control_plane.sfw.server import TOOL_NAME, build_server
 from ads_control_plane.sfw.service import run_all, summarize
 from tests.unit import test_sfw_pack as pack
 
@@ -55,6 +59,22 @@ def test_first_run_writes_a_0600_template_with_the_users_own_paths(tmp_path: Pat
     assert SHOPS_CMD_SYSTEM not in text
     assert BEARER_NOTE_SYSTEM not in text
     assert tomllib.loads(text)["lingxing"] == {"url": "", "key": ""}
+
+
+async def test_the_first_answer_says_which_file_to_fill_in(tmp_path: Path) -> None:
+    """第一次问必然撞上「url 还没填」。模型原样念这句话，它要是不说哪个文件，照着做就卡在
+    第一步——此前说的是「打开这个文件」（2026-09-23 Codex 复审 P2）。"""
+    path = tmp_path / "config.toml"
+    assert plugin.ensure_config(path) is True
+    server = build_server(
+        path, expect_uid=os.getuid(), fix_hint=plugin.FIX_HINT, wording=plugin.PLUGIN_WORDING
+    )
+    with pytest.raises(ToolError) as info:
+        await server.call_tool(TOOL_NAME, {})
+    message = str(info.value)
+    assert "配置错误：[lingxing] 的 url 还没填" in message
+    assert f"打开 ~/{USER_CONFIG_PATH.relative_to(Path.home())} " in message
+    assert "~/.amazon-ads/config.toml" in README, "README 教人开的就是这一个"
 
 
 def test_second_run_does_not_touch_an_existing_config(tmp_path: Path) -> None:

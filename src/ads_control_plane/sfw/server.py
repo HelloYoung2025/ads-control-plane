@@ -18,12 +18,16 @@
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import hmac
 import logging
+import os
 import sys
 import threading
+import time
 import tomllib
-from collections.abc import Awaitable, Callable, MutableMapping
+from collections.abc import Awaitable, Callable, Iterator, MutableMapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -47,6 +51,9 @@ logger = logging.getLogger("ads_control_plane.sfw")
 SERVER_NAME = "amazon-ads"
 #: 第二次调用最多在锁上等多久；超了就用一句人话打发，不让它静默等到工具超时。
 LOCK_WAIT_SECONDS = 30.0
+#: 跨进程那把锁的文件名，放在运行记录旁边：那一层两种形态下都是本服务自己写的。
+RUN_LOCK_NAME = ".running.lock"
+BUSY = "上一次查询还在跑，等它出结果；然后开一个新对话再问一次。"
 
 TOOL_NAME = "find_wasted_search_terms"
 
@@ -174,6 +181,33 @@ class _SourceHolder:
         return self._source
 
 
+@contextlib.contextmanager
+def _one_process_at_a_time(lock_path: Path) -> Iterator[bool]:
+    """跨进程的那把锁：拿到了 yield True，等满 LOCK_WAIT_SECONDS 还拿不到 yield False。
+
+    插件形态下 SFW 每个对话各拉一个进程，进程里那把 threading.Lock 管不到别的对话：
+    两个对话同时问，就是两个进程拿同一把领星 key 并发取数（QPS=1）、同时写运行记录
+    （2026-09-23 Codex 复审 P2）。flock 跟着打开的文件走，进程死了锁自己就放了。
+    """
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    try:
+        deadline = time.monotonic() + LOCK_WAIT_SECONDS
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    yield False
+                    return
+                time.sleep(0.2)
+            else:
+                yield True
+                return
+    finally:
+        os.close(fd)
+
+
 def build_server(
     config_path: Path,
     *,
@@ -201,14 +235,17 @@ def build_server(
         if not run_lock.acquire(timeout=LOCK_WAIT_SECONDS):
             # 不提 /fd：那是系统形态铺在孩子家里的斜杠命令，插件形态没有（引擎不扫插件里的
             # prompts/，2026-09-22 在 codex 0.153.4 上实测）。这句话两种形态都得成立。
-            return "上一次查询还在跑，等它出结果；然后开一个新对话再问一次。"
+            return BUSY
         try:
             try:
                 cfg = load_config(config_path, expect_uid=expect_uid)
             except ConfigError as exc:
                 raise ToolError(f"配置错误：{exc}，{fix_hint}") from exc
-            # 不走 service.run_once：它每次现建数据源，而这里要跨调用复用（取数缓存住在源实例里）。
-            runs = run_all(cfg, sources.for_config(cfg), now=now_fn())
+            with _one_process_at_a_time(cfg.run_log_path.parent / RUN_LOCK_NAME) as ours:
+                if not ours:
+                    return BUSY
+                # 不走 service.run_once：它每次现建数据源，这里要跨调用复用（缓存住在源实例里）。
+                runs = run_all(cfg, sources.for_config(cfg), now=now_fn())
             logger.info(
                 "find_wasted_search_terms：%s",
                 "，".join(f"{run.store.nickname}={run.outcome.value}" for run in runs),

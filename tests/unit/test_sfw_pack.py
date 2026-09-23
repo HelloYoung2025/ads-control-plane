@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ast
 import csv
+import fcntl
 import io
 import json
 import logging
@@ -851,6 +852,31 @@ async def test_two_calls_at_once_run_one_after_the_other(tmp_path: Path) -> None
     assert all(
         a_end <= b_start for (_, a_end), (b_start, _) in zip(spans, spans[1:], strict=False)
     ), "两个对话同时敲 /fd 也不并发打领星"
+
+
+async def test_a_run_in_another_process_is_waited_for_not_raced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """插件形态下每个对话一个进程，进程里的锁管不到别的对话（2026-09-23 Codex 复审 P2）。
+
+    「另一个进程」用另开的一份文件描述符来扮：flock 认的是打开的文件，不是进程号。
+    """
+    monkeypatch.setattr(server_module, "LOCK_WAIT_SECONDS", 0.3)
+    source = _seeded_mock()
+    path = private(tmp_path, config_text(tmp_path))
+    server = build_server(
+        path, expect_uid=None, now_fn=lambda: NOW, source_factory=lambda cfg: source
+    )
+    other = os.open(tmp_path / server_module.RUN_LOCK_NAME, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(other, fcntl.LOCK_EX)
+        result = await server.call_tool(TOOL_NAME, {})
+        assert getattr(result.content[0], "text", "") == server_module.BUSY
+        assert source.read_call_count == 0, "别的对话在取数时，这边一次都不取"
+    finally:
+        os.close(other)
+    result = await server.call_tool(TOOL_NAME, {})
+    assert getattr(result.content[0], "text", "").startswith("**美国店**")
 
 
 # ------------------------------------------------------------------ 13. Bearer

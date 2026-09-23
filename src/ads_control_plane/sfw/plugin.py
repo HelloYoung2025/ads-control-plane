@@ -33,8 +33,13 @@ from ads_control_plane.sfw.service import Wording
 logger = logging.getLogger("amazon-ads.plugin")
 
 #: 配置缺了什么的时候，工具返回的那句话的结尾。纪律第 4 条要求模型把带「配置错误：」
-#: 的报错原样念出来，所以这句话是直接给人看的——必须自己就能照着做完。
-FIX_HINT = "打开这个文件把缺的填上，填完在 SFW 里开一个新对话再问一次"
+#: 的报错原样念出来，所以这句话是直接给人看的——必须自己就能照着做完，头一件就是说清
+#: 哪个文件：此前只说「这个文件」，而第一次问必然撞上的「url 还没填」里并没有路径
+#: （2026-09-23 Codex 复审 P2）。
+FIX_HINT = (
+    f"打开 ~/{USER_CONFIG_PATH.relative_to(Path.home())} 把缺的填上，"
+    "填完在 SFW 里开一个新对话再问一次"
+)
 
 #: 逐店那几行的插件版说法：没有 /fd，没有管理员，CSV 由用的人自己交给领星。
 PLUGIN_WORDING = Wording(
