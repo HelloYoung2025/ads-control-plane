@@ -63,13 +63,18 @@ PYDIR="$(cd "$STAGE$ROOT/python" && ls -d cpython-*-macos-*-none/ | head -1)"
 PYDIR="${PYDIR%/}"
 [ -n "$PYDIR" ] || { echo "找不到装好的 Python 目录"; exit 1; }
 
+# grep 一行都没找到时退出 1，在 set -euo pipefail 下整条出包线会停在这里；只有 ≥2 才是
+# 真出错。没缓存的干净打包机上 Python 是直接下到 $STAGE 的，下面那次 $UVCACHE 扫描
+# 本来就该一行不中（2026-09-23 Codex 复审 P2）。
+files_containing() { grep -rIl -- "$1" "$2" 2>/dev/null || [ $? -eq 1 ]; }
+
 find "$STAGE" -type l | while IFS= read -r link; do
   target="$(readlink "$link")"
   case "$target" in
     "$STAGE"*) ln -snf "${target#"$STAGE"}" "$link" ;;
   esac
 done
-grep -rIl -- "$STAGE" "$STAGE" 2>/dev/null | while IFS= read -r f; do
+files_containing "$STAGE" "$STAGE" | while IFS= read -r f; do
   LC_ALL=C sed -i '' "s|$STAGE||g" "$f"
 done
 ln -snf "$ROOT/python/$PYDIR/bin/python3.12" "$STAGE$ROOT/venv/bin/python"
@@ -79,7 +84,7 @@ sed -i '' "s|^home = .*|home = $ROOT/python/$PYDIR/bin|" "$STAGE$ROOT/venv/pyven
 # _sysconfigdata 里那串编译期路径指的是缓存目录，也就是打包人的家目录。
 # 发给别人的包里带着打包人的用户名，2026-09-22 被仓库那条「禁用标识词」守卫抓到。
 UVCACHE="$HOME/.local/share/uv/python/$PYDIR"
-grep -rIl -- "$UVCACHE" "$STAGE" 2>/dev/null | while IFS= read -r f; do
+files_containing "$UVCACHE" "$STAGE" | while IFS= read -r f; do
   LC_ALL=C sed -i '' "s|$UVCACHE|$ROOT/python/$PYDIR|g" "$f"
 done
 
