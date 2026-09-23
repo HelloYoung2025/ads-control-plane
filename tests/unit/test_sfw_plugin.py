@@ -16,10 +16,14 @@ from pathlib import Path
 from ads_control_plane.sfw import plugin
 from ads_control_plane.sfw.config import (
     BEARER_NOTE_SYSTEM,
+    REPO_URL,
     SHOPS_CMD_SYSTEM,
     USER_CONFIG_PATH,
     USER_EXPORT_DIR,
+    parse_config,
 )
+from ads_control_plane.sfw.service import run_all, summarize
+from tests.unit import test_sfw_pack as pack
 
 REPO = Path(__file__).resolve().parents[2]
 PLUGIN_DIR = REPO / "plugins" / "amazon-ads"
@@ -145,3 +149,27 @@ def test_the_readme_does_not_tell_people_to_click_a_button_that_fails() -> None:
     steps = README.split("### 为什么不是在界面里点")[0]
     assert "点「安装」" not in steps
     assert "点它，点" not in steps
+
+
+def test_plugin_answers_never_send_people_to_fd_or_an_admin(tmp_path: Path) -> None:
+    """插件带不了斜杠命令，自己装的人也没有管理员：回答里出现这两样，照着做就是死路。
+
+    最常走的那条路（有 CSV 的回答最后一句）此前写的是「把 CSV 交给管理员」。
+    """
+    (tmp_path / "空").mkdir()
+    (tmp_path / "满").mkdir()
+    empty_runs, _, _ = pack._every_empty_outcome(tmp_path / "空")
+    empty = summarize(
+        empty_runs,
+        parse_config(pack.config_text(tmp_path / "空", pack.EMPTY_STORES)),
+        plugin.PLUGIN_WORDING,
+    )
+    full_cfg = parse_config(pack.config_text(tmp_path / "满"))
+    full = summarize(
+        run_all(full_cfg, pack._seeded_mock(), now=pack.NOW), full_cfg, plugin.PLUGIN_WORDING
+    )
+    for text in (empty, full):
+        assert "/fd" not in text and "/new" not in text and "管理员" not in text
+    assert "开一个新对话再问一次" in empty  # 取数失败那家店：怎么重试
+    assert REPO_URL in empty  # 重试解决不了时：去哪儿查
+    assert full.endswith(plugin.PLUGIN_WORDING.hand_over)

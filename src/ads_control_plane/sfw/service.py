@@ -26,6 +26,7 @@ import logging
 import re
 import time
 import uuid
+from collections import Counter
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
@@ -330,42 +331,62 @@ def _files_line(run: StoreRun) -> str:
     return f"文件：{_link(run.csv_path)} · 报表：{_link(run.html_path)}"
 
 
-def _first_line(run: StoreRun) -> str:
-    head = f"**{run.store.nickname}**："
+@dataclass(frozen=True)
+class Wording:
+    """回答里随形态变的三句话。
+
+    系统形态下用的人（孩子）什么都改不了：重试靠铺在他家里的 /fd，其余只能找管理员。
+    插件形态是自己装给自己用的——没有 /fd（插件带不了斜杠命令），也没有管理员可找，
+    照着那几句话做是死路，而它们出现在最常走的那条路上（有 CSV 的回答最后一句）。
+    """
+
+    retry: str  # 再跑一次怎么做
+    escalate: str  # 重试解决不了时，那句话的结尾
+    hand_over: str  # 有 CSV 时，回答的最后一句
+
+
+SYSTEM_WORDING = Wording(
+    retry="敲 /new 回车，再敲 /fd 回车回车",
+    escalate="找管理员",
+    hand_over="有文件的店：把 CSV 交给管理员，他在领星「否定词」里加上才算数。",
+)
+
+
+def _sentence(run: StoreRun, wording: Wording) -> str:
+    """店名后面那句话。店名由 summarize 加：只差店名的几家要合成一行。"""
     outcome = run.outcome
     if outcome is RunOutcome.NOT_RUN:
-        return head + "本轮没轮到（时间不够）；敲 /new 回车，再敲 /fd 回车回车。"
+        return f"本轮没轮到（时间不够）；{wording.retry}。"
     if outcome is RunOutcome.NO_DATA_SOURCE:
-        return head + "这家店没接上数据源，找管理员。"
+        return f"这家店没接上数据源，{wording.escalate}。"
     if outcome is RunOutcome.SOURCE_ERROR:
-        return head + (
+        return (
             f"取数失败（{run.error_code}），文件没有更新；等 1 分钟，"
-            "敲 /new 回车，再敲 /fd 回车回车，还不行找管理员。"
+            f"{wording.retry}，还不行{wording.escalate}。"
         )
     if outcome is RunOutcome.DATA_REJECTED:
-        return head + f"数据不合规（{run.error_code}），文件没有更新，找管理员。"
+        return f"数据不合规（{run.error_code}），文件没有更新，{wording.escalate}。"
     assert run.fetch is not None and run.result is not None and run.pack is not None
     fetch, result, pack = run.fetch, run.result, run.pack
     if outcome is RunOutcome.NO_USABLE_ROWS:
         rows = fetch.source_total if fetch.source_total is not None else fetch.unreadable_rows
-        return head + f"取到了 {rows} 行，但没有一组能判断，找管理员。"
+        return f"取到了 {rows} 行，但没有一组能判断，{wording.escalate}。"
     if outcome is RunOutcome.NO_ROWS:
-        return head + "这段时间没有搜索词数据。"
+        return "这段时间没有搜索词数据。"
     if outcome is RunOutcome.ALL_ASIN:
-        return head + (
+        return (
             f"花了钱没出单的全是 ASIN（{result.asin_abstain_count} 个），否定词挡不住，"
             f"要去领星「否定投放」单独处理{_asin_tail(result)}"
         )
     if outcome is RunOutcome.ALL_ABSTAINED:
-        return head + (
+        return (
             f"数据太旧（超过 {pack.max_data_staleness_hours} 小时），这次没法判断；"
-            "晚点敲 /new 回车，再敲 /fd 回车回车。"
+            f"晚点{wording.retry}。"
         )
     looked = f"看了 {result.evaluated_count} 组（去重 {result.distinct_search_terms} 个词），"
     if outcome is RunOutcome.NO_CANDIDATES:
         return (
-            head
-            + looked
+            looked
             + "没有要否定的词。这不等于没有浪费：门槛以下的词不算。"
             + (_asin_sentence(result))
         )
@@ -374,7 +395,7 @@ def _first_line(run: StoreRun) -> str:
     count = f"要否定 {len(result.candidates)} 个"
     if len(result.candidates) > report.MAX_CANDIDATES_IN_TABLE:
         count += f"（报表表格只列花费最高的 {report.MAX_CANDIDATES_IN_TABLE} 个，CSV 里是全部）"
-    return head + looked + count + "。" + _asin_sentence(result)
+    return looked + count + "。" + _asin_sentence(result)
 
 
 def _threshold_line(runs: Sequence[StoreRun], cfg: PackConfig) -> str:
@@ -398,25 +419,34 @@ def _threshold_line(runs: Sequence[StoreRun], cfg: PackConfig) -> str:
     return line
 
 
-def summarize(runs: Sequence[StoreRun], cfg: PackConfig) -> str:
+def summarize(runs: Sequence[StoreRun], cfg: PackConfig, wording: Wording = SYSTEM_WORDING) -> str:
     """工具返回的全部文字：每店一到两行（有文件的两行），末尾一行门槛与账目。
 
     不设总长上限：每店固定行数线性增长，20 家店也只是 40 行。截断只会把第 5、6 家
     之后的店折掉，而折掉的那些店在回答里连一行都没有。
+
+    只差店名的那句话合成一行、排在最后：2026-09-23 首次接真实数据，74 家店里 66 家
+    是同一句「这段时间没有搜索词数据」，要看的 8 家被埋在 66 行一模一样的话中间。
     """
-    blocks = []
-    for run in runs:
-        lines = [_first_line(run)]
+    sentences = [_sentence(run, wording) for run in runs]
+    repeated = Counter(s for run, s in zip(runs, sentences, strict=True) if run.html_path is None)
+    blocks: list[str] = []
+    alike: dict[str, list[str]] = {}
+    for run, sentence in zip(runs, sentences, strict=True):
         if run.html_path is not None:
-            lines.append(_files_line(run))
-        blocks.append("\n".join(lines))
+            blocks.append(f"**{run.store.nickname}**：{sentence}\n{_files_line(run)}")
+        elif repeated[sentence] > 1:
+            alike.setdefault(sentence, []).append(run.store.nickname)
+        else:
+            blocks.append(f"**{run.store.nickname}**：{sentence}")
+    blocks += [f"**{'、'.join(names)}**：{sentence}" for sentence, names in alike.items()]
     tail = _threshold_line(runs, cfg)
     # 无条件：孩子刚在弹窗上点了「批准」，这一句是他判断广告有没有被改的唯一依据。
     # 此前它挂在「有 CSV」这个条件下，于是全是 ASIN、没有要否定的词、取数全失败这三种
     # 结局里，一个刚按完批准的 10 岁孩子读不到任何一句说「我没动你的广告」。
     tail += "\n本工具不改任何广告。"
     if any(run.csv_path is not None for run in runs):
-        tail += "有文件的店：把 CSV 交给管理员，他在领星「否定词」里加上才算数。"
+        tail += wording.hand_over
     return tail if not blocks else "\n\n".join([*blocks, tail])
 
 

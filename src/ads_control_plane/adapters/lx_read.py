@@ -6,8 +6,8 @@
    发生之前即被拒（`LX_TOOL_NOT_ALLOWED`）——写工具（put_*/post_*）永远出不了这个客户端。
 2. **参数编码逐工具钉扎**：同名入参跨工具类型漂移（group 报表 with_ring 要 int、
    targeting 报表 with_ring 要 number、length 要 str），禁止共享参数序列化逻辑，
-   编码表见 `TOOL_PARAM_SPECS`，在 paramsJson 序列化前应用。
-3. **信封按工具族区分深度**：广告报表为双层信封（外层网关 code/message/data，
+   编码表见 `TOOL_PARAM_SPECS`，在交给网关之前应用。
+3. **信封按工具族区分深度**：广告报表为双层信封（外层网关 code/msg/data，
    内层 {traceId, recordsFiltered, code, data:[rows]}）；erp_listing 为三层信封
    （data.data.data={total, list}）。解析拆为纯函数，测试不触网络。
 4. **QPS 保守**：每次网关调用后强制间隔（默认 1.1 秒），测试可传 0。
@@ -30,10 +30,10 @@ from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 from mcp.types import CallToolResult
 
-#: 网关目录版本钉扎（实测目录：basic-open-online-20260825-v3）。
-DEFAULT_CATALOG_VERSION = "basic-open-online-20260825-v3"
-
 #: 网关三元工具（help/search/action）中唯一被本客户端调用的执行入口。
+#: 2026-09-23 实测它的入参只有 {toolId, params}，params 是对象。改版前是
+#: {toolId, catalogVersion, schemaVersion, paramsJson}，带着旧版本号调用，网关回
+#: code=102「工具参数定义已更新，请刷新工具列表后重新调用」——一家店都取不到。
 ACTION_TOOL_NAME = "action"
 
 #: erp_listing 走三层信封，与广告报表族区分。
@@ -85,7 +85,7 @@ class LxTransportError(LxReadError):
 
 
 class LxGatewayError(LxReadError):
-    """外层网关信封 code!=0（如 code=102 参数不合法）；error_details 原样携带。"""
+    """外层网关信封判为失败（如 code=102 参数不合法）；error_details 原样携带。"""
 
     def __init__(self, message: str, *, error_details: object = None) -> None:
         super().__init__(LX_GATEWAY_ERROR, message)
@@ -151,14 +151,9 @@ def _encode_str(param: str, value: object) -> str:
 
 @dataclass(frozen=True)
 class ToolParamSpec:
-    """单工具网关合同钉扎：schemaVersion + 同名入参的逐工具类型编码器。"""
+    """单工具网关合同钉扎：同名入参的逐工具类型编码器。"""
 
-    schema_version: str
     param_encoders: Mapping[str, Callable[[str, object], object]]
-
-    def __post_init__(self) -> None:
-        if not self.schema_version.strip():
-            raise LxReadError(LX_CONFIG_INVALID, "schema_version must be non-empty")
 
 
 _NO_ENCODING: Mapping[str, Callable[[str, object], object]] = {}
@@ -166,40 +161,28 @@ _NO_ENCODING: Mapping[str, Callable[[str, object], object]] = {}
 #: 逐工具参数编码表——漂移实测：group 报表 with_ring→int、targeting 报表
 #: with_ring→int（number 兼容）且 length→str，其余原样透传。
 TOOL_PARAM_SPECS: dict[str, ToolParamSpec] = {
-    "ad_auth_shops": ToolParamSpec(schema_version="ad_auth_shops-v1", param_encoders=_NO_ENCODING),
-    "ad_campaign_report": ToolParamSpec(
-        schema_version="ad_campaign_report-v1", param_encoders=_NO_ENCODING
-    ),
+    "ad_auth_shops": ToolParamSpec(param_encoders=_NO_ENCODING),
+    "ad_campaign_report": ToolParamSpec(param_encoders=_NO_ENCODING),
     "ad_campaign_group_report": ToolParamSpec(
-        schema_version="ad_campaign_group_report-v1",
         param_encoders={"with_ring": _encode_int},
     ),
     "ad_campaign_targeting_report": ToolParamSpec(
-        schema_version="ad_campaign_targeting_report-v1",
         param_encoders={"with_ring": _encode_int, "length": _encode_str},
     ),
-    "ad_campaign_keyword_report": ToolParamSpec(
-        schema_version="ad_campaign_keyword_report-v1", param_encoders=_NO_ENCODING
-    ),
+    "ad_campaign_keyword_report": ToolParamSpec(param_encoders=_NO_ENCODING),
     # 「广告」层（领星六层模型的第 4 层：投放在广告组里的具体商品）。2026-08-29 经
-    # 网关 search 实测：schemaVersion=ad_campaign_product_report-v1，toolType=read，
+    # 网关 search 实测：toolType=read，
     # required=[report_date, profile_id]——注意两处漂移：一是 profile_id 单数（其余
     # 报表族用 profile_ids 复数数组），二是它要 JSON number（"主店铺Profile ID",
     # type=integer），传字符串网关回 code=102 参数不合法。逐工具钉扎，不共享。
     "ad_campaign_product_report": ToolParamSpec(
-        schema_version="ad_campaign_product_report-v1",
         param_encoders={"with_ring": _encode_int, "profile_id": _encode_int},
     ),
-    "ad_campaign_search_term_report": ToolParamSpec(
-        schema_version="ad_campaign_search_term_report-v1", param_encoders=_NO_ENCODING
-    ),
-    # 广告组合层（领星六层模型的第 1 层）。2026-08-29 经网关 search 实测：
-    # schemaVersion=ad_portfolio_report_shop-v1，toolType=read，
+    "ad_campaign_search_term_report": ToolParamSpec(param_encoders=_NO_ENCODING),
+    # 广告组合层（领星六层模型的第 1 层）。2026-08-29 经网关 search 实测：toolType=read，
     # required=[report_date, profile_ids, page, length, sort_field, sort_type]。
-    "ad_portfolio_report_shop": ToolParamSpec(
-        schema_version="ad_portfolio_report_shop-v1", param_encoders=_NO_ENCODING
-    ),
-    "erp_listing": ToolParamSpec(schema_version="erp_listing-v1", param_encoders=_NO_ENCODING),
+    "ad_portfolio_report_shop": ToolParamSpec(param_encoders=_NO_ENCODING),
+    "erp_listing": ToolParamSpec(param_encoders=_NO_ENCODING),
 }
 
 # 导入期自检：编码表必须恰好覆盖白名单——两表漂移即为缺陷，当场失败。
@@ -271,9 +254,22 @@ def _first_int(source: Mapping[str, object], keys: tuple[str, ...]) -> int | Non
     return None
 
 
-def _raise_gateway_error(payload: Mapping[str, object], code: int) -> None:
+def _check_gateway_envelope(payload: Mapping[str, object]) -> None:
+    """外层网关信封的成功判定，三个工具族共用。
+
+    2026-09-23 实测：网关改版后外层换成旧 openapi 语义——成功是
+    {code: 1, success: true, msg: "操作成功"}，失败如 {code: 102, success: false, msg}；
+    改版前成功是 {code: 0, message}。两种都认，但 code=1 必须同时带 success=true：
+    只凭 code 放行，哪天冒出一个「code=1 表示失败」的信封就会被当成成功。
+    报错时带上网关原话（新版在 msg，旧版在 message），日志里才看得出为什么被拒。
+    """
+    code = _envelope_code(payload, "gateway envelope")
+    success = payload.get("success")
+    if (success is True and code in (0, 1)) or (success is None and code == 0):
+        return
+    said = payload.get("message") if payload.get("message") is not None else payload.get("msg")
     raise LxGatewayError(
-        f"gateway rejected the call: code={code} message={payload.get('message')!r}",
+        f"gateway rejected the call: code={code} success={success!r} message={said!r}",
         error_details=payload.get("error_details"),
     )
 
@@ -285,9 +281,7 @@ def parse_ad_report_envelope(payload: Mapping[str, object]) -> dict[str, object]
     data:[rows]}——rows 在内层 data 数组，total 在 recordsFiltered。兼容两个变体：
     内层 data 为 dict 含 "list" 键；外层 data 直接就是行数组（ad_auth_shops 类清单）。
     """
-    outer_code = _envelope_code(payload, "gateway envelope")
-    if outer_code != 0:
-        _raise_gateway_error(payload, outer_code)
+    _check_gateway_envelope(payload)
     inner_raw = payload.get("data")
     if isinstance(inner_raw, list):
         return {"rows": list(inner_raw), "total": None}
@@ -331,9 +325,7 @@ def parse_auth_shops_envelope(payload: Mapping[str, object]) -> dict[str, object
     code=1 且 success=true 为成功（旧 openapi 遗留，2026-08-28 实测）——不能复用
     报表族的 code==0 判定，否则把成功当业务错误。
     """
-    outer_code = _envelope_code(payload, "gateway envelope")
-    if outer_code != 0:
-        _raise_gateway_error(payload, outer_code)
+    _check_gateway_envelope(payload)
     inner = _require_mapping(payload.get("data"), "auth shops inner envelope")
     success = inner.get("success")
     inner_code = _optional_envelope_code(inner, "auth shops inner envelope")
@@ -354,9 +346,7 @@ def parse_erp_envelope(payload: Mapping[str, object]) -> dict[str, object]:
     外层网关 {code, message, data} → 中层 open api {msg, code, data, request_id}
     → 内层 {total, list}。中层 code!=0 为业务错误。
     """
-    outer_code = _envelope_code(payload, "gateway envelope")
-    if outer_code != 0:
-        _raise_gateway_error(payload, outer_code)
+    _check_gateway_envelope(payload)
     middle = _require_mapping(payload.get("data"), "erp middle envelope")
     middle_code = _optional_envelope_code(middle, "erp middle envelope")
     if middle_code != 0:
@@ -401,7 +391,6 @@ class LxMcpReadClient:
 
     - 凭据：url/key 由调用方从环境取出后传入；类内不读环境变量、不打印 key，repr 脱敏。
     - 防写：fetch_page 在任何网络调用之前校验只读白名单（LX_TOOL_NOT_ALLOWED）。
-    - 钉扎：catalogVersion 构造期固定；schemaVersion 按 TOOL_PARAM_SPECS 逐工具给出。
     - 节流：每次网关调用后 sleep(min_interval_seconds)（默认 1.1，测试传 0）。
     """
 
@@ -410,7 +399,6 @@ class LxMcpReadClient:
         url: str,
         key: str,
         *,
-        catalog_version: str = DEFAULT_CATALOG_VERSION,
         min_interval_seconds: float = DEFAULT_MIN_INTERVAL_SECONDS,
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
     ) -> None:
@@ -418,23 +406,17 @@ class LxMcpReadClient:
             raise LxReadError(LX_CONFIG_INVALID, "url must be non-empty")
         if not key.strip():
             raise LxReadError(LX_CONFIG_INVALID, "key must be non-empty")
-        if not catalog_version.strip():
-            raise LxReadError(LX_CONFIG_INVALID, "catalog_version must be non-empty")
         if min_interval_seconds < 0:
             raise LxReadError(LX_CONFIG_INVALID, "min_interval_seconds must be >= 0")
         if timeout_seconds <= 0:
             raise LxReadError(LX_CONFIG_INVALID, "timeout_seconds must be > 0")
         self._url = url
         self._key = key
-        self._catalog_version = catalog_version
         self._min_interval_seconds = min_interval_seconds
         self._timeout_seconds = timeout_seconds
 
     def __repr__(self) -> str:
-        return (
-            f"LxMcpReadClient(url={self._url!r}, key='***', "
-            f"catalog_version={self._catalog_version!r})"
-        )
+        return f"LxMcpReadClient(url={self._url!r}, key='***')"
 
     def fetch_page(self, tool_id: str, params: Mapping[str, object]) -> Mapping[str, object]:
         """拉取一页 → {"rows": list, "total": int | None}（吻合 LxReadPort 的结构合同）。
@@ -446,10 +428,9 @@ class LxMcpReadClient:
                 f"tool {tool_id!r} is not in the read-only allowlist; "
                 "write tools can never leave this client"
             )
-        spec = TOOL_PARAM_SPECS[tool_id]
         encoded = encode_params(tool_id, params)
         try:
-            params_json = json.dumps(encoded, ensure_ascii=False)
+            json.dumps(encoded, ensure_ascii=False)
         except (TypeError, ValueError) as exc:
             # 带码 fail-loud：非 JSON 可编码的参数值（如 Decimal/datetime）不得以
             # 裸 TypeError 逃逸——同样发生在任何网络调用之前。
@@ -457,12 +438,7 @@ class LxMcpReadClient:
                 LX_PARAM_NOT_ENCODABLE,
                 f"params for tool {tool_id!r} are not JSON-encodable: {exc}",
             ) from exc
-        envelope: dict[str, str] = {
-            "toolId": tool_id,
-            "catalogVersion": self._catalog_version,
-            "schemaVersion": spec.schema_version,
-            "paramsJson": params_json,
-        }
+        envelope: dict[str, object] = {"toolId": tool_id, "params": encoded}
         try:
             payload = self._perform_call(envelope)
         finally:
@@ -475,7 +451,7 @@ class LxMcpReadClient:
             return parse_auth_shops_envelope(payload)
         return parse_ad_report_envelope(payload)
 
-    def _perform_call(self, envelope: Mapping[str, str]) -> Mapping[str, object]:
+    def _perform_call(self, envelope: Mapping[str, object]) -> Mapping[str, object]:
         """一次网关 action 调用的同步外壳。测试以假体替换本方法，不触网络。
 
         传输层异常统一归类为 LxTransportError：MCP 客户端跑在 anyio task group 里，
@@ -498,7 +474,7 @@ class LxMcpReadClient:
                 f"gateway call failed at transport level: {type(exc).__name__}"
             ) from exc
 
-    async def _call_action(self, envelope: Mapping[str, str]) -> Mapping[str, object]:
+    async def _call_action(self, envelope: Mapping[str, object]) -> Mapping[str, object]:
         async with (
             httpx2.AsyncClient(
                 headers={"X-Mcp-Key": self._key}, timeout=self._timeout_seconds
@@ -514,9 +490,12 @@ class LxMcpReadClient:
                     error_details=type(result).__name__,
                 )
             if result.is_error:
+                said = _content_text(result)
                 raise LxGatewayError(
-                    "gateway rejected the action call at MCP level",
-                    error_details=_content_text(result),
+                    # 网关原话（含 msg 与 traceId，不含 key）进消息：只放在 error_details
+                    # 里时，日志只剩这半句，看不出是参数错、版本过期还是权限不够。
+                    f"gateway rejected the action call at MCP level: {(said or '')[:300]}",
+                    error_details=said,
                 )
             structured: object = result.structured_content
             if structured is not None:

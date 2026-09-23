@@ -11,7 +11,7 @@
 | DEC-001 | 旧领星 MCP 密钥吊销与轮换完成了吗（含使用日志核查）？2026-08-28 Owner 决定延后轮换；延后期间旧 key 维持"已暴露"定性。2026-08-28 晚 Owner 在对话中直接提供 key 并指示本会话连接调研（改写"平台不触 key"的先前安排）——会话仅执行只读调用（help/search/action:ad_auth_shops），key 未落任何文件；key 再次暴露于对话，轮换必要性不变 | 安全 Owner | OPEN |
 | DEC-002 | 领星 MCP 凭据绑定模式：个人/企业/应用？能否创建按店铺限权、只读、可轮换的多密钥？2026-08-28 实测：当前单 key 可见 74 店铺 14 国全量授权列表——广域 key（模式 3/DEC-103）实锤，profile 白名单授权不可省 | 技术 Owner（向领星核实） | OPEN |
 | DEC-003 | 领星权限变更/撤销后 MCP 生效延迟是多少？能否读取主体的精确动作权限？ | 技术 Owner | OPEN |
-| DEC-004 | 候选写工具的运行时 Schema、幂等、条件写(CAS)、超时语义、批量部分成功语义？2026-08-28 实测：入参 Schema 已全量取得并入库（docs/evidence/lx-schema-*），批量上限 1-1000、双层信封（网关 code + 业务 code/traceId）已知；幂等/CAS/部分成功仍未实测 | 技术 Owner（合同测试） | OPEN |
+| DEC-004 | 候选写工具的运行时 Schema、幂等、条件写(CAS)、超时语义、批量部分成功语义？2026-08-28 实测：入参 Schema 已全量取得，批量上限 1-1000、双层信封（网关 code + 业务 code/traceId）已知；幂等/CAS/部分成功仍未实测 | 技术 Owner（合同测试） | OPEN |
 | DEC-005 | 写后哪个读源是权威？传播延迟分布？是否有 Provider 操作日志可做归因确认？2026-08-28 实测：LX-MCP 写工具信封强制 module_name="Mcp" 作日志来源——领星操作日志可按来源区分 MCP 写入，归因对账路径存在 | 技术 Owner | OPEN |
 | DEC-006 | 每个 Shop/Profile 的业务责任人是谁？MVP Action/Field 白名单与金额风险上限？（已知：使用者为 2-5 人小团队——2026-08-28 业务 Owner 口头；责任人名单与金额上限仍未决） | 业务 Owner | OPEN |
 | DEC-007 | 合法审批人名单；公司是否接受"广域共享 key + 公司 ACL"模式的残余 blast radius？ | 业务+安全 Owner | OPEN |

@@ -15,7 +15,10 @@ SECURITY.md「密钥政策」第一条逐字要求：「代码、配置、fixtur
 import hashlib
 import json
 import re
+import sys
 from pathlib import Path
+
+import pytest
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -232,13 +235,15 @@ def test_a_sanitized_file_only_gets_a_pass_for_the_ids_it_listed(tmp_path: Path)
     assert _emitted_ids('{"rows": []}') is None, "没声明脱敏的文件不走白名单这条路"
 
 
-def test_the_forbidden_word_list_catches_a_real_store_name() -> None:
-    """名字类泄露：按 ID 字段名取值的那套完全看不见，这张哈希表是唯一的机械闸。"""
-    probe = "ES" + "OON" + "-US"  # 真值不以完整串出现在源码里，否则守卫抓的第一个泄露是它自己
+def test_the_forbidden_word_list_catches_a_listed_word(monkeypatch: pytest.MonkeyPatch) -> None:
+    """机制自检用合成词。真词连拼接的写法也不能进源码：2026-09-23 查出这里原来拼出了
+    一个真实店名和本机用户名——拼接躲得过守卫，躲不过读者。"""
+    word = "zzstorename"
+    digest = hashlib.sha256(word.encode()).hexdigest()
+    monkeypatch.setattr(sys.modules[__name__], "FORBIDDEN_TOKEN_HASHES", frozenset({digest}))
     path = Path(__file__)
-    assert _forbidden_tokens_in(path, f"实测店铺 {probe} 的活动数")
-    assert not _forbidden_tokens_in(path, "实测店铺 SYNTH-STORE 的活动数")
-    assert _forbidden_tokens_in(path, "/Users/" + "young" + "hu/Documents")
+    assert _forbidden_tokens_in(path, f'nickname = "{word.upper()}-US"')
+    assert not _forbidden_tokens_in(path, 'nickname = "美国一店"')
 
 
 def test_guard_actually_catches_a_realistic_id() -> None:

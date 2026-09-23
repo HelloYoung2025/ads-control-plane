@@ -53,6 +53,7 @@ from ads_control_plane.sfw.config import (
     DEFAULT_ROOT,
     DEFAULT_RUN_LOG,
     MARKETPLACE_CURRENCY,
+    NICKNAME_RE,
     SERVICE_USER,
     ConfigError,
     PackConfig,
@@ -1050,14 +1051,34 @@ def _field(row: Mapping[str, object], key: str) -> str:
     return "" if value is None or isinstance(value, bool) else str(value).strip()
 
 
+def _nickname_from_alias(alias: str, taken: set[str]) -> str:
+    """领星里的店名 → 合规昵称；做不出来就返回占位符，让人自己起。
+
+    2026-09-23 真事：一个账号授权了 74 家店，占位符要人一家一家起名——这一步没人做得下来，
+    配置就停在「key 填了、店铺是空的」。领星的 alias 就是人认得的店名，拿来用只做机械
+    替换：不合规的字符换成下划线、截到 20 个字，撞名在尾巴上编号。
+    """
+    name = re.sub(r"[^\w一-鿿-]+", "_", alias).strip("_-")[:20]
+    candidate, n = name, 2
+    while candidate in taken:
+        suffix = f"-{n}"
+        candidate, n = name[: 20 - len(suffix)] + suffix, n + 1
+    if not NICKNAME_RE.fullmatch(candidate):
+        return NICKNAME_PLACEHOLDER
+    taken.add(candidate)
+    return candidate
+
+
 def render_shops(rows: Sequence[object]) -> str:
     """把 ad_auth_shops 的行渲染成一张表 + 可直接粘进 config.toml 的 [[stores]] 段。
 
-    只印 profile_id/sid/country 与建议币种；缺任一项、或值里有引号/空白之类进不了 TOML
-    字符串的字符，该行跳过并计数——不猜、不修。
+    只印 profile_id/sid/country、建议币种与由店名得来的昵称；缺任一项、或值里有引号/空白
+    之类进不了 TOML 字符串的字符，该行跳过并计数——不猜、不修。
     """
     table: list[str] = []
     blocks: list[str] = []
+    taken: set[str] = set()
+    unnamed = 0
     skipped = 0
     for row in rows:
         if not isinstance(row, Mapping):
@@ -1069,6 +1090,8 @@ def render_shops(rows: Sequence[object]) -> str:
             skipped += 1
             continue
         currency = MARKETPLACE_CURRENCY.get(country, "")
+        nickname = _nickname_from_alias(_field(row, "alias"), taken)
+        unnamed += nickname == NICKNAME_PLACEHOLDER
         table.append(f"{pid:<20} {sid:<20} {country:<4} {currency or '（不知道，自己填）'}")
         hint = (
             "" if currency else f"  # 站点 {country} 不在建议表里：填这家店报表用的三字母币种代码"
@@ -1081,7 +1104,7 @@ def render_shops(rows: Sequence[object]) -> str:
                     f'sid = "{sid}"',
                     f'marketplace = "{country}"',
                     f'currency = "{currency}"{hint}',
-                    f'nickname = "{NICKNAME_PLACEHOLDER}"',
+                    f'nickname = "{nickname}"',
                 )
             )
         )
@@ -1089,15 +1112,20 @@ def render_shops(rows: Sequence[object]) -> str:
         return f"领星没有返回可用的已授权店铺（收到 {len(rows)} 行，跳过 {skipped} 行）。"
     note = f"，另有 {skipped} 行缺 profile_id/sid/country、已跳过" if skipped else ""
     header = f"{'profile_id':<20} {'sid':<20} {'站点':<4} 建议币种"
+    naming = (
+        f"其中 {unnamed} 家领星没给店名，把它们的 {NICKNAME_PLACEHOLDER} 换成你起的名字"
+        if unnamed
+        else "昵称先用了领星里的店名，想改就改"
+    )
     return "\n".join(
         (
             f"已授权店铺 {len(table)} 家{note}：",
             header,
             *table,
             "",
-            "把下面的段落粘进 config.toml，给每家店起个名字",
-            "（中文、字母、数字，不超过 20 个字，不能有空格），",
-            "再到 [thresholds.min_spend] 给每个币种填一档门槛：",
+            f"把下面的段落粘进 config.toml。{naming}",
+            "（昵称会进文件名：中文、字母、数字、下划线、连字符，不超过 20 个字）。",
+            "再到 [thresholds.min_spend] 给出现的每个币种各填一档门槛：",
             "",
             "\n\n".join(blocks),
         )

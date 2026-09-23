@@ -33,7 +33,13 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
 from ads_control_plane.sfw.config import ConfigError, PackConfig, check_private_file, load_config
-from ads_control_plane.sfw.service import build_source, run_all, summarize
+from ads_control_plane.sfw.service import (
+    SYSTEM_WORDING,
+    Wording,
+    build_source,
+    run_all,
+    summarize,
+)
 from ads_control_plane.strategies.ports import SearchTermReadPort
 
 logger = logging.getLogger("ads_control_plane.sfw")
@@ -175,12 +181,14 @@ def build_server(
     now_fn: Callable[[], datetime] = _utc_now,
     source_factory: Callable[[PackConfig], SearchTermReadPort] | None = None,
     fix_hint: str = "找管理员",
+    wording: Wording = SYSTEM_WORDING,
 ) -> MCPServer[Any]:
     """唯一的工具。ConfigError → ToolError("配置错误：…，<fix_hint>")；其余带码错误逐店进文本。
 
     fix_hint 是那句话的结尾，两种形态不一样：系统形态下改配置要 sudo，用的人改不了，
     只能「找管理员」；插件形态是自己装给自己用的，得告诉他自己去改哪儿。
     纪律第 4 条要求模型把这句话原样念出来，所以它是直接给人看的。
+    wording 是逐店那几行里随形态变的话，理由同上（见 service.Wording）。
     """
     server: MCPServer[Any] = MCPServer(name=SERVER_NAME, instructions=INSTRUCTIONS)
     sources = _SourceHolder(source_factory if source_factory is not None else build_source)
@@ -205,7 +213,7 @@ def build_server(
                 "find_wasted_search_terms：%s",
                 "，".join(f"{run.store.nickname}={run.outcome.value}" for run in runs),
             )
-            return summarize(runs, cfg)
+            return summarize(runs, cfg, wording)
         finally:
             run_lock.release()
 

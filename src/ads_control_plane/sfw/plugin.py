@@ -20,6 +20,7 @@ from pathlib import Path
 
 from ads_control_plane.sfw.config import (
     BEARER_NOTE_USER,
+    REPO_URL,
     TEMPLATE_HEADER_USER,
     USER_CONFIG_PATH,
     USER_EXPORT_DIR,
@@ -27,12 +28,20 @@ from ads_control_plane.sfw.config import (
     render_config_template,
     user_shops_command,
 )
+from ads_control_plane.sfw.service import Wording
 
 logger = logging.getLogger("amazon-ads.plugin")
 
 #: 配置缺了什么的时候，工具返回的那句话的结尾。纪律第 4 条要求模型把带「配置错误：」
 #: 的报错原样念出来，所以这句话是直接给人看的——必须自己就能照着做完。
 FIX_HINT = "打开这个文件把缺的填上，填完在 SFW 里开一个新对话再问一次"
+
+#: 逐店那几行的插件版说法：没有 /fd，没有管理员，CSV 由用的人自己交给领星。
+PLUGIN_WORDING = Wording(
+    retry="开一个新对话再问一次",
+    escalate=f"对照 {REPO_URL} 的「出错了」一节",
+    hand_over="有文件的店：把 CSV 加进领星「否定词」才算数。",
+)
 
 
 def ensure_config(path: Path) -> bool:
@@ -79,7 +88,7 @@ def main() -> int:
     path = USER_CONFIG_PATH
     if ensure_config(path):
         logger.info("第一次启动，已写配置模板：%s（填 [lingxing] 的 url 与 key）", path)
-    server = build_server(path, expect_uid=os.getuid(), fix_hint=FIX_HINT)
+    server = build_server(path, expect_uid=os.getuid(), fix_hint=FIX_HINT, wording=PLUGIN_WORDING)
     logger.info("amazon-ads 以 stdio 待命；配置 %s", path)
     server.run(transport="stdio")
     return 0

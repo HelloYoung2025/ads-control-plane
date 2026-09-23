@@ -32,6 +32,7 @@ from ads_control_plane.sfw import installer
 from ads_control_plane.sfw.config import (
     DEFAULT_EXPORT_DIR,
     DEFAULT_ROOT,
+    NICKNAME_RE,
     SERVICE_USER,
     ConfigError,
     parse_config,
@@ -39,6 +40,7 @@ from ads_control_plane.sfw.config import (
 )
 from ads_control_plane.sfw.installer import (
     LOG_PATH,
+    NICKNAME_PLACEHOLDER,
     REGISTRATION_KEYS,
     HostState,
     InstallerError,
@@ -941,6 +943,45 @@ def test_shops_renders_a_pasteable_store_table_without_the_key(private_config: P
     )
 
 
+def test_shops_names_each_store_after_its_lingxing_alias() -> None:
+    """74 家店逐个起名没人做得下来（2026-09-23 真事）。店名拿来即用，只做机械替换。"""
+    rows = [
+        {"profile_id": "1", "sid": 11, "country": "US", "alias": "美国一店"},
+        {"profile_id": "2", "sid": 12, "country": "UK", "alias": "Brand Store (UK)"},
+        {"profile_id": "3", "sid": 13, "country": "DE", "alias": "Brand Store [UK]"},
+        {
+            "profile_id": "4",
+            "sid": 14,
+            "country": "FR",
+            "alias": "一个非常非常非常非常非常非常长的店铺名字超过二十个字",
+        },
+        {"profile_id": "5", "sid": 15, "country": "IT", "alias": "!!!"},
+        {"profile_id": "6", "sid": 16, "country": "ES"},
+    ]
+    text = render_shops(rows)
+    stores = tomllib.loads(text[text.index("[[stores]]") :])["stores"]
+    names = [s["nickname"] for s in stores]
+    assert names[:4] == [
+        "美国一店",
+        "Brand_Store_UK",
+        "Brand_Store_UK-2",
+        "一个非常非常非常非常非常非常长的店铺名字",
+    ]
+    assert names[4:] == [NICKNAME_PLACEHOLDER, NICKNAME_PLACEHOLDER]  # 做不出来就不猜
+    assert "其中 2 家领星没给店名" in text
+    # 由店名得来的昵称必须一次通过配置校验，否则等于没做。
+    for name in names[:4]:
+        assert NICKNAME_RE.fullmatch(name), name
+    assert [s["sid"] for s in stores] == [
+        "11",
+        "12",
+        "13",
+        "14",
+        "15",
+        "16",
+    ]  # sid 是 int 也照样可粘
+
+
 def test_shops_refuses_an_open_config_before_any_network_call(private_config: Path) -> None:
     os.chmod(private_config, 0o644)
     with pytest.raises(ConfigError) as caught:
@@ -1052,6 +1093,9 @@ def test_shops_and_doctor_commands_use_the_service_uid_and_exit_codes(
 ) -> None:
     monkeypatch.setattr(installer, "service_uid", os.getuid)
     monkeypatch.setattr(installer, "LxMcpReadClient", FakeClient)
+    # doctor 会问 launchctl daemon 登记没有；不换掉就真去跑 /bin/launchctl——CI 的 Linux
+    # 上没有这个程序，2026-09-23 就是这样红的。
+    monkeypatch.setattr(installer, "daemon_loaded", lambda: False)
     assert cli.main(["shops", "--config", str(private_config)]) == 0
     out = capsys.readouterr().out
     assert "[[stores]]" in out and KEY not in out

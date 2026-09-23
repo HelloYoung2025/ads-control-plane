@@ -401,6 +401,39 @@ def test_nobody_can_be_judged_leaves_a_line_in_the_log(
     assert "整组没判断" in lines[0], "两种成因得分得开：账目本身就是分法"
 
 
+def test_stores_that_differ_only_by_name_share_one_line_at_the_end(tmp_path: Path) -> None:
+    # 2026-09-23 首次真实运行：74 家店里 66 家是同一句「这段时间没有搜索词数据」。
+    stores: list[Store] = [
+        ("p-e1", "s-e1", "US", "USD", "空一"),
+        ("p-clean", "s-clean", "US", "USD", "干净店"),
+        ("p-e2", "s-e2", "US", "USD", "空二"),
+        ("p-f1", "s-f1", "US", "USD", "断网一"),
+        ("p-e3", "s-e3", "US", "USD", "空三"),
+        ("p-f2", "s-f2", "US", "USD", "断网二"),
+        ("p-deny", "s-deny", "US", "USD", "被拒店"),
+    ]
+    cfg = parse_config(config_text(tmp_path, stores))
+    source = FakeSource()
+    for profile in ("p-e1", "p-e2", "p-e3"):
+        source.seed(profile, [])
+    source.seed("p-clean", [record("p-clean", "sold widget", conversions=3)])
+    source.failing |= {
+        "p-f1": "LX_TRANSPORT_ERROR",
+        "p-f2": "LX_TRANSPORT_ERROR",
+        "p-deny": "LX_GATEWAY_ERROR",
+    }
+    blocks = summarize(run_all(cfg, source, now=NOW), cfg).split("\n\n")[:-1]
+    # 只出现一次的话留在原位；有报表的店（两行）永不合并；合并的放在最后。
+    assert [b.split("：")[0] for b in blocks] == [
+        "**干净店**",
+        "**被拒店**",
+        "**空一、空二、空三**",
+        "**断网一、断网二**",
+    ]
+    assert blocks[2] == "**空一、空二、空三**：这段时间没有搜索词数据。"
+    assert blocks[3].startswith("**断网一、断网二**：取数失败（LX_TRANSPORT_ERROR）")
+
+
 def test_an_empty_run_says_which_reason_it_was(tmp_path: Path) -> None:
     runs, text, export_dir = _every_empty_outcome(tmp_path)
     assert [run.outcome for run in runs] == [
