@@ -92,7 +92,8 @@ def _setup_child(args: argparse.Namespace) -> int:
         print("以上只是计划，什么都没做。")
         return 0
     print(f"{args.child_user} 的家目录布置好了：~/否定词/AGENTS.md、/fd、桌面「否定词导出」。")
-    print("接着切到他的账号，按 README 第 7–10 步在他的 SFW 里登记与培训。")
+    print("接着到他的账号里打开 SFW，照 sudo amazon-ads print-registration 打印的登记连接器；")
+    print("再重启一次 SFW——斜杠菜单只在启动时读，不重启 /fd 不出现。")
     return 0
 
 
@@ -148,7 +149,9 @@ def _install(args: argparse.Namespace) -> int:
     installer.execute(steps, dry_run=args.dry_run)
     payload = installer.registration_json(_SECRET_AFTER_INSTALL if args.dry_run else bearer)
     print()
-    print("在 SFW「定制化 → 连接器 → 添加服务器」里逐格填（第 7 步会在孩子账号里再打印一次）：")
+    print(
+        "在孩子账号的 SFW「定制化 → 连接器 → 添加服务器」里逐格填（print-registration 能再打印）："
+    )
     print(f"  名称      {payload['name']}")
     print(f"  服务地址   {payload['url']}")
     print("  认证方式   Bearer Token")
@@ -157,8 +160,7 @@ def _install(args: argparse.Namespace) -> int:
     print(f"下一步：sudo -e '{DEFAULT_CONFIG_PATH}' 填 [lingxing]；")
     print("sudo amazon-ads shops；把打印的 [[stores]] 段粘进配置；")
     print("sudo amazon-ads doctor 全过之后 sudo amazon-ads start；")
-    print("再照 README「管理员一次性安装」第 7–10 步收尾——那几步要在孩子的账号里做，")
-    print("且必须重启一次 SFW，否则 /fd 不存在。")
+    print("最后到孩子的账号里打开 SFW 登记上面那个连接器，再重启一次 SFW，否则 /fd 不存在。")
     return 0
 
 

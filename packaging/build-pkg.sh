@@ -139,4 +139,6 @@ pkgbuild "${ARGS[@]}" "$OUT"
 echo
 echo "好了：$OUT"
 echo "大小：$(du -h "$OUT" | cut -f1)   架构：$ARCH"
-[ -z "$SIGN" ] && echo "没签名：别人装的时候要右键『打开』，或到系统设置→隐私与安全性里放行。"
+if [ -z "$SIGN" ]; then
+  echo "没签名：别人装的时候要右键『打开』，或到系统设置→隐私与安全性里放行。"
+fi

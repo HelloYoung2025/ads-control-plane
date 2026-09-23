@@ -473,6 +473,9 @@ def plan_child(
     steps: list[Step] = []
     # ⑦ 孩子的家目录只放三样：项目文件夹里的 AGENTS.md、斜杠命令、桌面上指向导出目录的链接。
     project_dir = child_home / PROJECT_DIR
+    # 斜杠菜单是 SFW 进程自己读 ~/.codex/prompts 拼出来的，不是引擎家 ~/.sfw/engine-home
+    # （引擎 0.153.4 本身没有自定义提示词）。2026-09-23 在 SFW 1.1.0 上核对：SFW 进程的环境里
+    # 没有 CODEX_HOME（引擎子进程才有），webui/composer.js 给菜单项标的就是「~/.codex/prompts」。
     prompts_dir = child_home / ".codex" / "prompts"
     #    孩子家里已有的目录一步不动（keep_existing）：~/.codex 里有他的登录态，不能被放开。
     steps += [

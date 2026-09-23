@@ -14,7 +14,7 @@
   免得「20 能过、20.50 不能过」在人眼里像是随机的。
 
 所有语义校验都在 `parse_config` 里，每个错误都是一个 `ConfigError`：`code` 给程序分辨，
-`str(exc)` 是一句能直接给人看的中文——server 层会原样把它塞进「配置错误：…，找管理员」。
+`str(exc)` 是一句能直接给人看的中文——server 层会原样把它塞进「配置错误：…」那句话里。
 """
 
 from __future__ import annotations

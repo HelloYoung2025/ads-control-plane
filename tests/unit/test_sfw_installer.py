@@ -1094,7 +1094,7 @@ def test_shops_and_doctor_commands_use_the_service_uid_and_exit_codes(
     monkeypatch.setattr(installer, "service_uid", os.getuid)
     monkeypatch.setattr(installer, "LxMcpReadClient", FakeClient)
     # doctor 会问 launchctl daemon 登记没有；不换掉就真去跑 /bin/launchctl——CI 的 Linux
-    # 上没有这个程序，2026-09-23 就是这样红的。
+    # 上没有这个程序，CI 从 2026-09-20 起就是这样红的。
     monkeypatch.setattr(installer, "daemon_loaded", lambda: False)
     assert cli.main(["shops", "--config", str(private_config)]) == 0
     out = capsys.readouterr().out
