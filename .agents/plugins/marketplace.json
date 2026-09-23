@@ -1,0 +1,12 @@
+{
+  "name": "ecom-pack",
+  "interface": { "displayName": "电商 Pack" },
+  "plugins": [
+    {
+      "name": "amazon-ads",
+      "source": { "source": "local", "path": "./plugins/amazon-ads" },
+      "policy": { "installation": "AVAILABLE", "authentication": "ON_USE" },
+      "category": "Productivity"
+    }
+  ]
+}

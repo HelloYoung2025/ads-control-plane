@@ -1,4 +1,4 @@
-"""「统计区间 X 至 Y；最近 N 天不计入」这句话，对每个数据源实现都必须是同一句。
+"""「统计 X 到 Y」这个区间，对每个数据源实现都必须是同一个。
 
 2026-09-07 排查：真实源按 UTC 日历天对齐、右端退 3 天（归因滞后），Mock 却手搓了
 另一套——`now - 30d` 到 `now - 1d`，既不对齐日界也不认那 3 天，而且**整个丢掉**
@@ -27,9 +27,9 @@ from ads_control_plane.canonical.entity import (
 )
 from ads_control_plane.canonical.ids import new_canonical_id
 from ads_control_plane.canonical.money import Money
-from ads_control_plane.providers.mock.search_terms import MockSearchTermSource
 from ads_control_plane.strategies.negation import SearchTermRecord
 from ads_control_plane.strategies.ports import ATTRIBUTION_LAG_DAYS, attribution_window
+from tests.support.mock_search_terms import MockSearchTermSource
 
 AS_OF = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
 

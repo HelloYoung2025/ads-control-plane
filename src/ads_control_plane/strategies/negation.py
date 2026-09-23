@@ -3,9 +3,9 @@
 2026-08-28 业务 Owner 裁决（decision register DEC-015 / DEC-111）：
 首批策略 = 高耗零转化词否定；起点 = 阶梯式 L1（AI 生成候选 → 人批准）。
 
-边界（与执行链的关系）：
-- 本模块只产出候选集合、导出行与核验结论，不 import 任何 Provider 适配器；
-  否定词的真实写入在写通道合同冻结（DEC-009 快照）前只允许人工执行（L1.5）。
+边界：
+- 本模块只产出候选集合与导出行，不 import 任何 Provider 适配器；
+  否定词的真实写入由人把 CSV 交给领星完成，本仓库没有写通道。
 - "零转化"（conversions == 0）是规则定义本身，不是参数：把它做成参数会允许
   "低转化也杀"悄悄扩大杀伤面，越过 DEC-015 的白名单裁决。
 """
@@ -17,40 +17,21 @@ import json
 import uuid
 from collections.abc import Callable, Sequence
 from datetime import datetime, timedelta
-from decimal import Decimal
 from enum import StrEnum
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
-from ads_control_plane.authorization.sod import SoDViolation, check_can_approve
 from ads_control_plane.canonical.entity import CanonicalEntityRef, EntityType
 from ads_control_plane.canonical.ids import CanonicalId
 from ads_control_plane.canonical.money import Money
-from ads_control_plane.identity.actor import ActorContext, PrincipalType
-from ads_control_plane.proposals.model import CANONICALIZATION_VERSION
 from ads_control_plane.strategies.rule_class import RuleClass
 
-#: 候选集合从生成到批准的最长时效——候选基于历史窗口，放久了"零转化"可能已不成立。
-CANDIDATE_SET_TTL_HOURS = 72
-
-
-def candidate_set_expired(generated_at: datetime, now: datetime) -> bool:
-    """过没过时效。**唯一**判据，两个 API 面与域层闸共用。
-
-    此前三处各写各的：域层 approve() 是 `now - generated_at > 72h`（开区间），
-    两个 API 面是 `now >= generated_at + 72h`（闭区间）。恰好 72 小时那一刻，
-    界面说「已过期」而服务端其实还收。
-
-    差一瞬看着无所谓，代价却不小：界面为过期集合给的下一步是「拒绝后重新生成」，
-    而默认打法 1 次/日——照做等于赔掉一整天的配额，去换一份服务端本来还肯批的集合。
-    宁可晚一瞬说过期，也不能早一瞬。判据收在这里，第三个面再来也不会各写一套。
-    """
-    return now - generated_at > timedelta(hours=CANDIDATE_SET_TTL_HOURS)
-
-
-#: 核验匹配的操作日志动作名（canonical 词表；真实 Provider 日志由 M2 采集器映射进来）。
-NEGATIVE_CREATE_ACTION = "CREATE_NEGATIVE_EXACT"
+#: Hash 规范化方式版本。变更序列化规则必须提升此版本，旧 Hash 不做跨版本比较。
+#: 2026-09-19 瘦身时搬来就地定义（原定义在同日删除的提案模块里），值逐字不变：compute_hash /
+#: content_fingerprint / NegationParameterPack.content_hash 三处载荷都带着它，
+#: 而 CSV 文件名与报表印的正是 content_fingerprint——值一变，旧文件就对不上新报表。
+CANONICALIZATION_VERSION = "sha256-jsonc1"
 
 
 class NegationParameterPack(BaseModel):
@@ -76,7 +57,7 @@ class NegationParameterPack(BaseModel):
         return self
 
     def content_hash(self) -> str:
-        """参数列表合同 hash：目标授权（mandate）绑定它；参数变更 = 合同重签。"""
+        """参数包合同 hash：参数变更 = 合同重签。"""
         payload = {
             "canonicalization": CANONICALIZATION_VERSION,
             "pack": self.model_dump(mode="json"),
@@ -106,7 +87,7 @@ class SearchTermRecord(BaseModel):
     #: 否掉是把好流量扔了）和来自 6 万次曝光（CTR 0.07%，纯粹不相关，该否）
     #: 是两个相反的结论，而证据行上「花费 87.40 / 点击 42 / 广告订单 0」两者逐字相同。
     #: None = 源侧没给或读不出来，不编（展示型指标解析失败不许毙掉候选，
-    #: 与 mirror/sync.py 的分法同源：判定型才抛，展示型置 None）。
+    #: 与当年镜像模块（已删）的分法同源：判定型才抛，展示型置 None）。
     impressions: int | None = None
     window_start: datetime
     window_end: datetime
@@ -139,7 +120,7 @@ class SearchTermRecord(BaseModel):
         # 时区检查必须在最前面：下面的 window_end <= window_start 与策略里的
         # now - data_as_of 都要拿这些时刻做比较/减法，naive 混进来先炸的是裸
         # TypeError，穿透 MCP 面后只剩一句 Error executing tool，拒绝的理由丢失。
-        # mirror/snapshot.py、run_window.py、mandate.py 都有这道闸，策略输入曾是唯一缺口。
+        # 当年镜像与授权书模块（已删）都有这道闸，策略输入曾是唯一缺口（2026-08-30 补上）。
         for label in ("window_start", "window_end", "data_as_of"):
             moment: datetime = getattr(self, label)
             if moment.tzinfo is None or moment.tzinfo.utcoffset(moment) is None:
@@ -166,8 +147,8 @@ class CandidateEvidence(BaseModel):
     spend: Money
     clicks: int
     conversions: int
-    #: 进 compute_hash 是对的：审批人在证据表里看到的就是这个数，AX-07 要求
-    #: 被批准的内容与被看见的内容是同一份。
+    #: 进 compute_hash 是对的：人在报表里看到的就是这个数，AX-07 要求
+    #: 交给领星的内容与被看见的内容是同一份。
     impressions: int | None = None
     window_start: datetime
     window_end: datetime
@@ -183,8 +164,8 @@ class NegationCandidate(BaseModel):
     search_term: str
     match_type: Literal["NEGATIVE_EXACT"] = "NEGATIVE_EXACT"
     evidence: CandidateEvidence
-    #: 人看的名字，随证据一起冻结（因此也进 set_hash）。进 hash 是对的：审批人
-    #: 看到的就是这两个名字，AX-07 要求被批准的内容与被看见的内容是同一份。
+    #: 人看的名字，随证据一起冻结（因此也进 set_hash）。进 hash 是对的：人在报表里
+    #: 看到的就是这两个名字，AX-07 要求交给领星的内容与被看见的内容是同一份。
     #: 名字在冻结集合里不可变，所以不会引起 CONTENT_DRIFT。
     campaign_name: str | None = None
     ad_group_name: str | None = None
@@ -340,12 +321,10 @@ def generate_negation_candidates(
 class CandidateSetState(StrEnum):
     GENERATED = "GENERATED"
     FROZEN = "FROZEN"
-    APPROVED = "APPROVED"
-    REJECTED = "REJECTED"
 
 
 class NegationCandidateSet(BaseModel):
-    """候选集合：冻结 Hash 绑定审批（与 Proposal 同一套 AX-07 语义）。"""
+    """候选集合：冻结后 set_hash 钉住这一份内容（AX-07：人看见的与人拿去执行的是同一份）。"""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -359,16 +338,10 @@ class NegationCandidateSet(BaseModel):
     source: str  # "AI" | "HUMAN"
     state: CandidateSetState = CandidateSetState.GENERATED
     set_hash: str | None = None
-    approved_by_person_id: str | None = None
-    approved_at: datetime | None = None
-    #: 经目标授权自动生成时记录出处（DEC-114）；人工/即席生成为 None。
-    mandate_id: uuid.UUID | None = None
-    #: 本次实际命中多少个候选；超出授权书上限被截断时才不为 None。
-    #: 此前这个事实只进 MCP 返回值，签字的人看到的只有截断后的数字——
-    #: 卡片写「20 个候选词」，人核对完 20 条就认为「这就是这次找出来的全部浪费」，
-    #: 而实际命中 137 个、117 个被静默丢弃，当天配额又不允许再跑。
-    #: 签发表单自己承诺过「运行结果会告诉你截断前有多少个」（index.html:274），
-    #: 而那个人往往就是审批屏幕前的这个人。
+    #: 本次实际命中多少个候选；超出每轮上限被截断时才不为 None。
+    #: 这个事实必须跟着集合走：人看到「20 个候选词」、核对完 20 条就会认为
+    #: 「这就是这次找出来的全部浪费」，而实际命中 137 个、117 个被静默丢弃
+    #: （2026-09 之前它只进 MCP 返回值，看清单的人从来看不到）。
     truncated_from: int | None = None
     #: 同一轮里"钱在烧、但本策略否不掉"的词有几个（ASIN 型搜索词）。
     #: 和 truncated_from 是同一个病的两个入口：这个事实此前只进 MCP 返回值，而
@@ -376,11 +349,9 @@ class NegationCandidateSet(BaseModel):
     #: 不进 compute_hash——它不是被批准的内容，是被批准内容的**边界说明**，
     #: 与 truncated_from 同一条理由。
     asin_abstain_count: int = 0
-    #: 那几个 ASIN 到底是哪几个。计数没有词就等于「知道有钱在烧，但说不出烧在哪」——
-    #: 卡片此前把人指去「向 AI 要那次运行的 abstains」，而这条路走不通：词表不进
-    #: 任何存储，list_negation_candidate_sets 只回计数，按同一份授权书重跑当天必撞
-    #: RUN_BUDGET_EXCEEDED（产出这份集合的那次运行已经把配额用掉了）。人在签完字
-    #: 正要去领星的那一刻，知道该去哪个页签、唯独拿不到要否定的那个词。
+    #: 那几个 ASIN 到底是哪几个。计数没有词就等于「知道有钱在烧，但说不出烧在哪」：
+    #: 人正要去领星的那一刻，知道该去哪个页签、唯独拿不到要否定的那个词
+    #: （2026-09 之前词表不进任何存储，只能这样丢失）。
     #: 与 asin_abstain_count 同理由不进 compute_hash：边界说明，不是被批准的内容。
     asin_abstain_terms: tuple[str, ...] = ()
 
@@ -405,12 +376,12 @@ class NegationCandidateSet(BaseModel):
 
     @property
     def profile_external_id(self) -> str | None:
-        """这批候选归属的店铺。候选的 scope 里现成就有，此前只有 REST 面私有一份。
+        """这批候选归属的店铺。候选的 scope 里现成就有。
 
-        两家店各有一份待批集合时，两张卡片除 uuid 前 8 位外一切可比信息相同——
-        候选数、生成时间、来源、广告组名（同一条产品线在两家店常常就是同名广告组）。
-        人挑一份批准、下载 CSV，文件里没有一列告诉他该打开哪家店的后台。
-        跨店时返回 None：说不出唯一一家，就不许挑一家说。
+        两家店各有一份集合时，除 uuid 外一切可比信息都可能相同——候选数、生成时间、
+        广告组名（同一条产品线在两家店常常就是同名广告组）；文件里若没有一列说明
+        该打开哪家店的后台，人就会加错店。跨店时返回 None：说不出唯一一家，
+        就不许挑一家说。
         """
         profiles = {c.scope.profile_external_id for c in self.candidates}
         return profiles.pop() if len(profiles) == 1 else None
@@ -419,13 +390,13 @@ class NegationCandidateSet(BaseModel):
         """同一批词、同一批证据的两次生成得到同一个值——set_hash 不会。
 
         set_hash 绑定的是**这一份**冻结集合，每条候选的编号进 hash，于是内容逐字
-        相同的两次生成必得两个不同的 hash。这对审批防篡改是对的，但它让「这两份
-        待批是不是同一批发现」在界面上无从回答：两张卡片并排、指纹不同、词数相同，
+        相同的两次生成必得两个不同的 hash。这对防篡改是对的，但它让「这两份
+        是不是同一批发现」无从回答：两份报表并排、hash 不同、词数相同，
         读起来就是两批不同的发现，而人不会去逐词比对。2026-08-30 在真实通道上实测：
         连续两次即席生成（第二次全部命中缓存，输入逐行相同）产出两份 7 条候选的
         FROZEN 集合，set_hash 完全不同。
 
-        本值只回答「是不是同一批」，不参与审批绑定——两者故意分开：一个必须随
+        本值只回答「是不是同一批」，不参与 set_hash 绑定——两者故意分开：一个必须随
         每次冻结而变，一个必须不变。
 
         `evidence.data_as_of` 同样要剔除（2026-08-30 排查）。它记的是**取数时刻**，
@@ -444,7 +415,7 @@ class NegationCandidateSet(BaseModel):
         同步镜像、再生成一次：第一次镜像里还没有名字（解析为 null），第二次有了。
         对象身份不在名字里而在 scope（entity_external_id + parent_refs），它仍在指纹中，
         所以剔名字不会把两批不同对象的候选混成一批。
-        名字仍然进 set_hash：审批绑定的是**人看见的那一份**（AX-07），那里必须含名字。
+        名字仍然进 set_hash：set_hash 绑定的是**人看见的那一份**（AX-07），那里必须含名字。
         这两个 hash 回答的是两个不同的问题，这正是它们分开存在的理由。
         """
         items: list[dict[str, Any]] = []
@@ -473,58 +444,16 @@ class NegationCandidateSet(BaseModel):
             update={"state": CandidateSetState.FROZEN, "set_hash": self.compute_hash()}
         )
 
-    def approve(
-        self, approver: ActorContext, expected_hash: str, now: datetime
-    ) -> NegationCandidateSet:
-        if self.state is not CandidateSetState.FROZEN:
-            raise CandidateSetError("NOT_FROZEN", f"cannot approve from {self.state}")
-        if self.set_hash is None or expected_hash != self.set_hash:
-            raise CandidateSetError("HASH_MISMATCH", "approval must bind the frozen hash")
-        if self.compute_hash() != self.set_hash:
-            raise CandidateSetError("CONTENT_DRIFT", "content changed after freeze")
-        if candidate_set_expired(self.generated_at, now):
-            raise CandidateSetError(
-                "SET_EXPIRED",
-                f"candidate set older than {CANDIDATE_SET_TTL_HOURS}h; regenerate from fresh data",
-            )
-        # 复用 Proposal 的审批冲突矩阵：AI 永不能批；AI 生成集合的 creator_person 为 None。
-        check_can_approve(approver, self.created_by_person_id, None)
-        return self.model_copy(
-            update={
-                "state": CandidateSetState.APPROVED,
-                "approved_by_person_id": approver.human_person_id,
-                "approved_at": now,
-            }
-        )
-
-    def reject(self, rejector: ActorContext) -> NegationCandidateSet:
-        """否决同样是审批意思表示，只属于人类会话（AX-05）。
-
-        REJECTED 是终态：AI 若能否决，它就能单方面清空人的待办队列，且没有任何
-        一条闸会响。批准侧靠 check_can_approve 挡住了 AI，否决侧原本一道闸都没有——
-        闸装在域层而不是只装在 HTTP 层：将来 MCP 工具面若长出 reject 工具，
-        它会自动继承这条约束，而不是重新裸奔一次。
-
-        与批准不同，这里**不查** CREATOR_CANNOT_*：否决是收缩授权（把待批变成
-        不做），自己否掉自己生成的东西不产生任何利益冲突。
-        """
-        if self.state is not CandidateSetState.FROZEN:
-            raise CandidateSetError("NOT_FROZEN", f"cannot reject from {self.state}")
-        if rejector.principal_type is not PrincipalType.HUMAN:
-            raise SoDViolation("AI_CANNOT_REJECT", "only HUMAN principals may reject")
-        return self.model_copy(update={"state": CandidateSetState.REJECTED})
-
 
 class BulkNegativeRow(BaseModel):
-    """人工执行用导出行（L1.5：人经领星后台/Bulk 应用，平台随后经操作日志核验）。"""
+    """人工执行用导出行：人拿着 CSV 在领星后台逐条加否定词；组件不核验、不记录那一步。"""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     #: 这行要加到哪家店。AX-06 要求写入定位靠「精确对象 + 完整父链」，而这张表
     #: 正是真正交到人手上去执行的那份东西——父链此前在店铺这一层就断了。
-    #: 两家店各有一份待批集合时，导出的两个文件除文件名里的 uuid 外无从分辨，
-    #: 而同一条产品线在两家店常常就是同名广告组。加错店后 verify_applied 只会回
-    #: NOT_FOUND，不会说明原因。
+    #: 两家店的导出文件若只靠文件名区分就无从分辨，而同一条产品线在两家店常常
+    #: 就是同名广告组。加错店时没有任何东西会报错。
     profile_external_id: str
     shop_external_id: str
     campaign_external_id: str
@@ -537,8 +466,8 @@ class BulkNegativeRow(BaseModel):
 
 
 def to_bulk_rows(candidate_set: NegationCandidateSet) -> tuple[BulkNegativeRow, ...]:
-    if candidate_set.state is not CandidateSetState.APPROVED:
-        raise CandidateSetError("NOT_APPROVED", "only approved sets may be exported")
+    if candidate_set.state is not CandidateSetState.FROZEN:
+        raise CandidateSetError("NOT_FROZEN", "only frozen sets may be exported")
     rows: list[BulkNegativeRow] = []
     for c in candidate_set.candidates:
         campaign_id = c.scope.parent_refs.campaign_external_id
@@ -555,8 +484,8 @@ def to_bulk_rows(candidate_set: NegationCandidateSet) -> tuple[BulkNegativeRow, 
                 ad_group_name=c.ad_group_name,
             )
         )
-    # 行序贴人的执行路径，不贴取数顺序。CSV 的每一行都是人到领星后台手工加的一条
-    # （runbook §④），而加的方式是「下钻到某个广告组 → 在它的『否定词』页签里加」。
+    # 行序贴人的执行路径，不贴取数顺序。CSV 的每一行都是人到领星后台手工加的一条，
+    # 而加的方式是「下钻到某个广告组 → 在它的『否定词』页签里加」。
     # 上游按花费倒序跨广告组交错取行，照抄过来就是让人在活动之间来回下钻几十次，
     # 同一个广告组反复打开——真实一批 50~150 行时这是纯粹的白跑。
     # 归组后组内保持原序（list.sort 稳定），也就是仍按花费从高到低——
@@ -566,91 +495,12 @@ def to_bulk_rows(candidate_set: NegationCandidateSet) -> tuple[BulkNegativeRow, 
     return tuple(rows)
 
 
-class OperationLogSource(StrEnum):
-    ERP = "ERP"
-    AMAZON = "AMAZON"
-
-
-class OperationLogEntry(BaseModel):
-    """canonical 操作日志条目。真实领星"操作日志（新）"由 M2 采集器映射到此模型。"""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    occurred_at: datetime
-    operator_name: str
-    source: OperationLogSource
-    action: str
-    ad_group_external_id: str
-    search_term: str
-
-
-class VerificationStatus(StrEnum):
-    APPLIED_VERIFIED = "APPLIED_VERIFIED"
-    NOT_FOUND = "NOT_FOUND"
-    #: 多条日志匹配同一候选：无法唯一归因，宁可上报也不猜（对齐回读四分级的诚实边界）。
-    AMBIGUOUS = "AMBIGUOUS"
-
-
-class CandidateVerification(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    candidate_id: CanonicalId
-    status: VerificationStatus
-    matched_operator: str | None = None
-    detail: str = ""
-
-
-def verify_applied(
-    candidate_set: NegationCandidateSet,
-    operation_log: Sequence[OperationLogEntry],
-) -> tuple[CandidateVerification, ...]:
-    """L1.5 核验闭环：批准后的候选是否在操作日志中出现恰一次。"""
-    if candidate_set.state is not CandidateSetState.APPROVED or candidate_set.approved_at is None:
-        raise CandidateSetError("NOT_APPROVED", "verification requires an approved set")
-    approved_at = candidate_set.approved_at
-    results: list[CandidateVerification] = []
-    for c in candidate_set.candidates:
-        matches = [
-            entry
-            for entry in operation_log
-            if entry.action == NEGATIVE_CREATE_ACTION
-            and entry.ad_group_external_id == c.scope.entity_external_id
-            and entry.search_term.casefold() == c.search_term.casefold()
-            and entry.occurred_at >= approved_at
-        ]
-        if not matches:
-            results.append(
-                CandidateVerification(
-                    candidate_id=c.candidate_id,
-                    status=VerificationStatus.NOT_FOUND,
-                    detail="no matching operation-log entry after approval",
-                )
-            )
-        elif len(matches) == 1:
-            results.append(
-                CandidateVerification(
-                    candidate_id=c.candidate_id,
-                    status=VerificationStatus.APPLIED_VERIFIED,
-                    matched_operator=matches[0].operator_name,
-                )
-            )
-        else:
-            results.append(
-                CandidateVerification(
-                    candidate_id=c.candidate_id,
-                    status=VerificationStatus.AMBIGUOUS,
-                    detail=f"{len(matches)} log entries match; cannot attribute uniquely",
-                )
-            )
-    return tuple(results)
-
-
 def render_bulk_csv(
     rows: Sequence[BulkNegativeRow],
     *,
     name_of: Callable[[str, str], str | None] | None = None,
 ) -> str:
-    """L1.5 人工执行用 CSV（UTF-8 带 BOM，含表头）。列名即 canonical 字段名，不做本地化。
+    """人工执行用 CSV（UTF-8 带 BOM，含表头）。列名即 canonical 字段名，不做本地化。
 
     name_of("campaign"|"ad_group", external_id) 可选：提供时在 ID 列之后追加
     campaign_name / ad_group_name 两列（镜像现值解析；缺名留空，不编造）。
@@ -698,51 +548,12 @@ def render_bulk_csv(
             row.match_type,
         ]
         if name_of is not None:
-            # 先用候选自带的名字（与这批指标出自同一行、随冻结集合一起被批准），
-            # 没有才回落到镜像解析。反过来会让镜像里那个**另一时点**的名字盖掉
-            # 审批人实际看过的那个。
+            # 先用候选自带的名字（与这批指标出自同一行、随冻结集合一起被人看见），
+            # 没有才回落到 name_of 解析。反过来会让**另一时点**的名字盖掉
+            # 人在报表里实际看过的那个。
             campaign_name = row.campaign_name or name_of("campaign", row.campaign_external_id)
             ad_group_name = row.ad_group_name or name_of("ad_group", row.ad_group_external_id)
             cells.append(defuse(campaign_name or ""))
             cells.append(defuse(ad_group_name or ""))
         writer.writerow(cells)
     return buffer.getvalue()
-
-
-class ObjectiveEstimate(BaseModel):
-    """目标函数度量（DEC-113：策略结论以显式目标函数为依据，禁止"优化好了"语义）。
-
-    NEG_EXACT 的目标函数 = 消除的无效花费。估计量 = 已核验落地候选在回看窗口内的
-    花费之和。这是 OBSERVED 估计而非因果结论（被否定词的流量可能转移到其他词），
-    causality 字段固定为 INCONCLUSIVE——因果版本需要 holdout 实验（Gate 4 之后）。
-    """
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    objective: Literal["WASTED_SPEND_REMOVED"] = "WASTED_SPEND_REMOVED"
-    estimated_amount: Money
-    verified_candidate_count: int
-    total_candidate_count: int
-    causality: Literal["INCONCLUSIVE"] = "INCONCLUSIVE"
-
-
-def estimate_waste_removed(
-    candidate_set: NegationCandidateSet,
-    verifications: Sequence[CandidateVerification],
-) -> ObjectiveEstimate:
-    """只统计 APPLIED_VERIFIED 的候选——未核验的候选不计入任何目标函数声明。"""
-    verified_ids = {
-        v.candidate_id for v in verifications if v.status is VerificationStatus.APPLIED_VERIFIED
-    }
-    currency = candidate_set.candidates[0].evidence.spend.currency
-    total = Money(amount=Decimal("0"), currency=currency)
-    count = 0
-    for c in candidate_set.candidates:
-        if c.candidate_id in verified_ids:
-            total = total + c.evidence.spend
-            count += 1
-    return ObjectiveEstimate(
-        estimated_amount=total,
-        verified_candidate_count=count,
-        total_candidate_count=len(candidate_set.candidates),
-    )

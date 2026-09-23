@@ -5,9 +5,6 @@
 **读侧**：`search_terms.py` 已落地（NEG_EXACT 的真实搜索词源）。合同测试见
 `tests/unit/test_lingxing_search_terms.py`。
 
-**写侧**：Write Adapter 不在本目录——它只允许存在于 `executor/` 包（ADR-002），
-且在 DEC-010 写通道选型落地前不得动工。
-
 本仓库任何环境不得配置真实密钥（SECURITY.md）。
 
 ## 2026-08-30 更新前的状态，与它为什么不再成立
@@ -16,14 +13,13 @@
 版本固定的领星 Tool Schema / Response Fixture，不得凭工具名称或旧聊天记忆臆造字段」。
 对照今天的事实，其中两条已经不成立：
 
-- **Schema 已录，不是臆造**。2026-08-28 经网关 `search` 工具实测录得 10 份工具 schema
-  （`docs/evidence/lx-schema-*.json`），含本目录用到的
-  `ad_campaign_search_term_report-20260828.json`。同一批实测让 DEC-009（快照冲突）
-  判定关闭，快照在 `docs/evidence/lx_mcp_snapshot_20260828T085423Z.json`。
-  README 此前把这项已完成的工作仍列为待办。
-- **「本目录保持空实现」与仓库现状不符**。`adapters/lx_read.py` + `mirror/sync.py`
-  早已带着实测 schema 在生产路径上跑 9 个只读工具，且有结构性防写
-  （`READ_TOOL_ALLOWLIST` 之外的 toolId 在任何网络调用之前即被拒）。
+- **Schema 已录，不是臆造**。2026-08-28 经网关 `search` 工具实测录得 10 份工具 schema，
+  含本目录用到的搜索词报表；同一批实测让 DEC-009（快照冲突）判定关闭。
+  README 此前把这项已完成的工作仍列为待办。录得的 schema 与目录快照是领星的私有接口
+  文档，2026-09-20 建公开远端时从仓库移除，只留在 Owner 本机。
+- **「本目录保持空实现」与仓库现状不符**。`adapters/lx_read.py` 早已带着实测 schema
+  跑 9 个只读工具，且有结构性防写（`READ_TOOL_ALLOWLIST` 之外的 toolId 在任何网络调用
+  之前即被拒）。
 
 DEC-013 仍 OPEN，如实保留。但它管的是**凭据的写能力**——原文是 Gate 1 退出条件
 「凭据写能力已被证实性禁用并通过写拒绝测试」——而不是只读 provider 的开工前置；
@@ -33,8 +29,8 @@ DEC-013 仍 OPEN，如实保留。但它管的是**凭据的写能力**——原
 
 此前 `docs/evidence/` 里 16 份证据的 `responseDescription` 一律为 `null`，只录了入参
 schema，没有一份响应样例。现已录得
-`lx-response-ad_campaign_search_term_report-20260830.json`（脚本
-`scripts/lx_search_term_fixture.py`，只读、密钥只经环境变量、不落盘）。
+`lx-response-ad_campaign_search_term_report-20260830.json`（录制时只读、密钥只经
+环境变量、不落盘）。
 
 被冻结成合同的是其中的**字段清单**（每个键观测到的类型集合、null 率、是否出现在
 汇总行），它天然不含业务数据，却正是 mapper 依赖的东西。它印证了实现里的四条假设：
@@ -58,9 +54,8 @@ schema，没有一份响应样例。现已录得
 
 行内 ID 用保形替换（同长度、同前导零、同 JSON 类型；盐随机生成、用后即弃），
 名称与搜索词换合成值，指标保留格式改数值，`request_id`/`traceId` 剥离。
-文件顶层的 `sanitized` 声明由录制脚本写入，零 Secret 守卫
-（`tests/unit/test_no_real_ids_in_repo.py`）据它放行本文件的 ID 字段——
-忘了脱敏的人也会忘了加声明，守卫照样拦住。
+文件顶层的 `sanitized` 声明是零 Secret 守卫（`tests/unit/test_no_real_ids_in_repo.py`）
+放行本文件 ID 字段的依据。
 
 `tests/unit/test_lingxing_search_terms.py` 的夹具则是**手工合成**的，不是这份证据的
 拷贝——证据要忠实，夹具要刁钻（真实抽样里未必有前导零 ID、千分位、空 query 这些行，

@@ -18,7 +18,7 @@ from ads_control_plane.strategies.negation import SearchTermRecord
 #: 最未结算的几天判死刑，而这是数据本身完全看不出来的缺陷——证据行上一切正常。
 #:
 #: 放在端口而不是某个 Provider 里：它是「回看窗口是怎么划的」这个契约的一部分，
-#: 人在界面上读到的「统计区间 X 至 Y；最近 3 天不计入」对每个实现都必须是同一句话。
+#: 人在界面上读到的「统计 X 到 Y」对每个实现都必须是同一个区间。
 #: 此前只有真实源有这套算法，Mock 手搓了另一套（不对齐日界、退 1 天），于是演示教给
 #: 人的是「29 天 + 最近 2 天」，生产会显示「30 天 + 最近 3 天」（2026-09-07 排查）。
 ATTRIBUTION_LAG_DAYS = 3
@@ -95,7 +95,8 @@ class SearchTermFetch:
     #: 连广告组是谁都读不出来，就说不出它落在哪份授权的范围里。恒为全店口径。
     unattributable_rows: int = 0
     #: 读不出来的行总数（含上一行那些）。它是「账要对得上」的那一格：
-    #: source_total = skipped_summary_rows + duplicate_rows + unreadable_rows + usable_rows。
+    #: source_total = unreadable_rows + usable_rows。汇总行与跨页重复行是上游在
+    #: total 之外多给的（见 providers/lingxing/search_terms.py 的实测注释），不进这条等式。
     #: 少了这一格，有身份但指标读不出来的行在任何行级计数里都不出现，读响应的人
     #: 按账目相减会得出「行全部可用」，而被丢掉的恰恰是可能携带订单的那些。
     unreadable_rows: int = 0

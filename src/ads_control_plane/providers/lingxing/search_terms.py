@@ -51,7 +51,7 @@ CONVERSION_FIELD = "orders"
 
 #: 归因滞后天数与窗口推导都搬到了端口（ports.ATTRIBUTION_LAG_DAYS /
 #: attribution_window）：那是「回看窗口怎么划」的契约，不是本实现的私事——
-#: 界面上「统计区间 X 至 Y；最近 3 天不计入」对每个实现都得是同一句话。
+#: 界面上「统计 X 到 Y」对每个实现都得是同一个区间。
 #: 名字在本模块仍可见，原有引用不变。
 
 #: 「未否定」——这一条下推是正确性不是性能：已否定过的词不该再被提名否定，
@@ -337,7 +337,7 @@ class LingxingSearchTermSource:
             unjudged_groups=unjudged,
             unattributable_rows=counts.unattributable,
             # 读不出来的行总数与真正参与聚合的行数一起报出去，账才对得上：
-            # source_total = 汇总行 + 重复行 + 读不出来的行 + 可用行。少一格，
+            # source_total = 读不出来的行 + 可用行；汇总行与重复行在 total 之外。少一格，
             # 有身份但指标读不出来的那些行在任何行级计数里都不出现。
             unreadable_rows=counts.rejected,
             usable_rows=len(parsed),

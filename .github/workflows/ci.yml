@@ -17,5 +17,5 @@ jobs:
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: uv run mypy
-      # CI 只允许 Mock Provider：任何指向真实 Provider 的配置在此环境即缺陷（SECURITY.md）。
+      # CI 只用 tests/support 假源：任何指向真实 Provider 的配置在此环境即缺陷（SECURITY.md）。
       - run: uv run pytest -q

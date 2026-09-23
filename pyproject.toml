@@ -1,15 +1,20 @@
 [project]
 name = "ads-control-plane"
-version = "0.1.0"
+version = "0.1.1"
 requires-python = ">=3.12"
+license = "MIT"
+license-files = ["LICENSE"]
 dependencies = [
-    "fastapi>=0.115",
-    "httpx>=0.28.1",
+    "httpx2>=2.12",
     "mcp>=2.1,<3",
     "pydantic>=2.9",
-    "sqlalchemy>=2.0",
     "uvicorn>=0.52.4",
 ]
+
+[project.scripts]
+amazon-ads = "ads_control_plane.sfw.__main__:main"
+# SFW 插件装好后，引擎用 stdio 拉起来的就是这一条。
+amazon-ads-mcp = "ads_control_plane.sfw.plugin:main"
 
 [dependency-groups]
 dev = [
@@ -17,18 +22,10 @@ dev = [
     "pytest>=8",
     "pytest-asyncio>=1.4.0",
     "ruff>=0.16.5",
-    "ads-write-executor",
-    "httpx>=0.28.1",
 ]
 
-[tool.uv.workspace]
-members = ["executor"]
-
-[tool.uv.sources]
-ads-write-executor = { workspace = true }
-
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]

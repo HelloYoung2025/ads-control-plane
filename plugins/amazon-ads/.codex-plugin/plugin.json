@@ -1,0 +1,21 @@
+{
+  "name": "amazon-ads",
+  "version": "0.1.1",
+  "description": "找出亚马逊广告里花了钱却没出单的搜索词，给出可以直接否定的候选清单。只读，不改任何广告设置。",
+  "author": { "name": "HelloYoung2025" },
+  "repository": "https://github.com/HelloYoung2025/ads-control-plane",
+  "license": "MIT",
+  "keywords": ["amazon", "ads", "negative-keywords", "ecommerce"],
+  "mcpServers": "./.mcp.json",
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "亚马逊否定词",
+    "shortDescription": "找出花了钱没出单的搜索词",
+    "longDescription": "按你设的回看天数、点击数和花费门槛，逐店找出「有点击有花费、订单为 0」的搜索词，导出可以直接交给领星的 CSV 与一份报表。全程只读：它不会改你的广告，也不会替你提交否定词。",
+    "developerName": "HelloYoung2025",
+    "category": "Productivity",
+    "capabilities": ["Read"],
+    "defaultPrompt": ["找出所有店铺里花了钱却没出单的搜索词"],
+    "brandColor": "#B4551C"
+  }
+}

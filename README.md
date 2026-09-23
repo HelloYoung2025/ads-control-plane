@@ -1,81 +1,166 @@
 # ads-control-plane
 
-公司内部广告管理控制平面。把领星 MCP（及未来其他 Provider）包在公司身份、权限、提案、审批与审计之后，供 Web 运营台与 Codex 等 AI 客户端共用一套业务核心。
+SFW 电商 Pack 里的**亚马逊否定词组件**，做成一个 SFW 插件：装上之后，你在 SFW 里问一句
+「找出所有店铺里花了钱却没出单的搜索词」，它读领星的搜索词报表，写出否定词 CSV 和一份报表。
 
-**当前实际能做的**：人在 Web 台签一份目标授权书 → AI 客户端按这份授权生成否定词候选 →
-人对着冻结指纹批准 → 导出 CSV，**由人拿去领星后台手工执行**。系统自己不改任何广告，
-也不会自己到点运行：每一次运行都由人在 AI 客户端里发起（仓库里没有调度器）。
+**它不改你的广告。** 否定词只在你把 CSV 交给领星「否定词」之后才生效，那一步在本组件之外、由人做。
+本仓库按 [MIT 许可证](LICENSE) 开源（v0.1.0 同样适用），不提供任何担保，出了问题自负。
+与 Amazon、领星没有隶属关系。
 
-设计输入：`LINGXING_MCP_AD_MANAGEMENT_PLATFORM_HANDOFF.md`（v1.0）。该文档是**待验证的设计输入，不是生产授权**。本仓库当前只实现其中经辩证评审后保留的 MVP 范围：只读数据面 + 提案/审批/执行安全内核（全部 Mock Provider）。
+## 装（两块命令，都在「终端」里粘）
 
-## 架构（一句话）
-
-已落地的链路（写侧尚未接通，见「生产授权」）：
-
-```
-客户端(MCP/REST/UI) → 身份网关 → 只读查询 / 结构化提案 → 权限与风险门 → 审批 → 导出 CSV(人工执行)
-```
-
-设计中的完整链路，`executor/` 已按此形状建包但未接入任何真实写凭据：
-
-```
-… → 审批 → 签名 Intent → 隔离写执行器(一次提交) → Provider Adapter → 回读对账 → 审计
-```
-
-## 模块地图
-
-```
-src/ads_control_plane/          # core 域（无写凭据、无执行协议）
-  identity/        ActorContext、principal（自报身份一律不可信）
-  authorization/   EffectiveAllow 交集判定、SoD 冲突矩阵、fail-closed
-  canonical/       String 外部 ID、Decimal+币种、完整父链
-  capabilities/    Provider 工具登记：新工具默认禁用、Schema 漂移即冻结
-  proposals/       绝对目标值 + expected_before + 冻结 Hash
-  approvals/       审批绑定 Hash；内容变化即失效
-  safety/          执行状态机、单提交 CAS 存储、kill epoch
-  audit/           追加式审计账本（预写失败即停写）
-  providers/       Read/Write Adapter 协议 + mock/；lingxing/ 只读搜索词源(见其 README)
-  strategies/      目标授权书、运行闸（时段/间隔/配额）、否定词候选与导出 CSV
-  mirror/          领星只读镜像同步（分页续拉、覆盖率如实上报），只活在进程内存
-  tasks/           勾选 → 「现值 → 新值」预览（只产预览，不产生任何执行）
-  adapters/        lx_read：结构性防写白名单，只放行 9 个只读工具
-  api/mcp_tools/   Internal MCP 只读工具面（mcp SDK ≥2.1）
-  api/ui_static/   Web 运营台（原生 HTML/JS/CSS，无框架无构建）
-executor/                        # uv workspace 独立包：唯一允许执行协议与写适配器的部署单元
-  src/ads_write_executor/        # 执行协议（门序+一次提交）、桶感知节流
-```
-
-依赖方向单向 executor → core，由测试断言（[test_package_isolation.py](tests/unit/test_package_isolation.py)）。
-
-## 文档索引
-
-- [docs/runbook-local-demo.md](docs/runbook-local-demo.md) — 十分钟走查：起服务、签授权书、批准、导出 CSV
-- [docs/codex-connect.md](docs/codex-connect.md) — 把 Codex 等 AI 客户端接到本服务的 /mcp
-- [SECURITY.md](SECURITY.md) — 安全公理 AX-01..17 与禁止事项
-- [docs/roadmap.md](docs/roadmap.md) — 垂直三层与 M0-M5 里程碑
-- [docs/adr/](docs/adr/) — 6 份架构决策记录
-- [docs/registers/](docs/registers/) — Decision / Assumption Register（Owner 决策队列）
-- [docs/reviews/2026-08-28-dialectic-review.md](docs/reviews/2026-08-28-dialectic-review.md) — 对设计输入的多智能体辩证评审（CONDITIONAL-GO）
-- [docs/research/](docs/research/) — 5 路外部调研存档（领星/Amazon Ads/MCP 规范/工程栈/本地文档）
-- [docs/evidence/](docs/evidence/) — Gate 阶段报告
-
-## 开发
+**第一块**：装 uv（只有第一次需要，不用管理员密码，也不用先有 Python）。
 
 ```bash
-uv sync
-uv run pytest
-uv run ruff check .
+curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-起一个纯 Mock 的本地实例（Web 台在 <http://127.0.0.1:8791/ui/>，MCP 面在 `/mcp`）：
+装完**把终端窗口关掉、重新开一个**，不然下一块找不到刚装上的 uv。
+
+**第二块**：整块一起粘进去回车。第一次装和以后升级都粘这一块：第三行先把装过的旧版挪掉
+（第一次装时它什么也不做），接着两行把组件装进 SFW，最后一行把它先下下来。
 
 ```bash
-uv run python scripts/serve_local_demo.py --port 8791
+export CODEX_HOME=~/.sfw/engine-home
+C=/Applications/SFW.app/Contents/Frameworks/vendor/bin/codex
+"$C" plugin marketplace remove ecom-pack 2>/dev/null
+"$C" plugin marketplace add HelloYoung2025/ads-control-plane@v0.1.1
+"$C" plugin add amazon-ads@ecom-pack
+uvx --from git+https://github.com/HelloYoung2025/ads-control-plane@v0.1.1 amazon-ads --help
 ```
 
-默认启动不需要任何生产凭据；集成测试只连接 Mock Provider。数据是不是真的由环境变量
-决定，不由「本地演示」这四个字决定——启动横幅按实际通道状态逐条播报。
+看到 `Added plugin` 那一行就是装上了。最后一行第一次要两三分钟
+（2026-09-22 实测 159 秒），之后就有缓存了；跳过它也能用，只是第一次在 SFW 里问话时
+要在那儿干等这段时间。
 
-## 生产授权
+两处 `@v0.1.1` 别删：它钉住你装的是哪一版，插件自己启动时拉的也是这一版。只换版本号、
+不先挪掉旧的，会报「already added from a different source」（2026-09-23 实测），所以第三行不能省。
 
-默认：**无**。任何真实 Provider 连接、真实凭据、真实广告写入都需要业务/技术/安全 Owner 按 Gate 另行书面授权（见 `docs/registers/decision-register.md`）。本仓库的测试通过不构成生产权限。
+装完回 SFW **重开一个对话**再用（插件带的工具和技能在对话开始时加载）。
+
+### 为什么不是在界面里点
+
+SFW 的「定制化 →插件 →最底下的『高级 · 插件来源』」那个输入框，粘上面那个地址点「添加」
+是有效的（2026-09-22 实测，引擎配置里确实写进了 git 来源和 `v0.1.0`）。但后面两步走不通：
+
+- 加完插件不会出现在「发现」列表里，得再点一次「刷新目录」；
+- 卡片上的「安装 → 确认安装」装不上，报
+
+  ```
+  JSON-RPC error -32600: plugin/install requires exactly one of marketplacePath or remoteMarketplaceName
+  ```
+
+实测环境 SFW 1.1.0 / codex-cli 0.153.4，市场源是 git 来源；本地路径来源我没验成。
+上面那几行命令调的就是界面底下的同一个引擎，所以这里给命令而不是给点击步骤。
+
+## 用（问一句就行）
+
+在 SFW 里说：**「找出所有店铺里花了钱却没出单的搜索词」**。
+
+不用记命令，也没有斜杠命令——话说得差不多就行（「有哪些词白花钱」「整理一批否定词」都能认出来）。
+回答里每家店一两行，说的话一样的几家店并成一行放在最后；有要否定的词才有 CSV，出了问题照那行说的做。
+文件在回答里的蓝字链接，也在你家目录的「否定词导出」文件夹里。
+
+要是跳过了第二块的最后一行，第一次问会先卡两三分钟把组件装好；之后一家店通常半分钟内
+（2026-09-23 实测 74 家店共 462 秒），最长 45 分钟封顶，等着就行。
+
+**把对话档位设成「完全访问权限」**（输入框左下角）。SFW 1.1.0 的「请求批准」档下，
+MCP 工具调用会弹一个「MCP 请求你的输入」窗，窗上写着「此请求当前只允许拒绝」——
+点提交没反应，等满 5 分钟超时，工具永远调不通，而且那个窗会把整个界面锁住到重启 SFW。
+这不是可选项，是 1.1.0 唯一能用的档位。
+
+## 填密钥（第一次问完之后）
+
+第一次调用会告诉你：`配置错误：[lingxing] 的 url 还没填…`。按它说的打开
+`~/.amazon-ads/config.toml`（只有你自己能读，0600），文件里每一行都写着该填什么：
+
+- `[lingxing]` 的 `url` 和 `key`。`key` 在领星 ERP 后台【业务配置 → 开放接口 → MCP】里生成，
+  不是开放平台的 appId/appSecret。密钥只在这个文件里，不进环境变量，也不进任何对话。
+- `[[stores]]`：文件里有一行现成的命令，在「终端」里跑一下就会打印可以直接粘贴的店铺段落。
+- `[thresholds]`：回看天数、最少点击数、按币种的最低花费。
+
+填完回 SFW **开一个新对话**再问一次，不用重启任何东西。
+
+## 文件长什么样
+
+都在你家目录的 `否定词导出/` 里：
+
+- `否定词-<昵称>-<日期>-<指纹8>.csv`：交给领星的否定词表，按活动→广告组分组。日期是统计区间的
+  最后一天，指纹是内容指纹的前 8 位——同一批数据再跑得到同一个文件名。
+- `报表-<昵称>-<日期>-<指纹8>.html`：给人看的。每个候选词的花费、点击、曝光与订单（都是 0）、
+  统计区间；否定词挡不住的 ASIN（要去领星「否定投放」单独处理）；生效的门槛；和 CSV 同一个指纹。
+- `~/.amazon-ads/运行记录.csv`：每跑完一家店追加一行（时间、店铺、结局、各项数量、指纹、CSV 文件名）。
+
+## 不承诺什么
+
+- **不到点自己跑**：每一次运行都由人在 SFW 里问一句发起，仓库里没有调度器
+  （守卫：`tests/unit/test_nothing_runs_unattended.py`）。
+- **不写领星**：组件只有只读工具，白名单外的领星调用在发出任何网络请求之前就被拒。
+- **不批准任何否定词**：哪些词真的否定，由你对着报表把 CSV 交给领星决定。组件这头没有
+  APPROVED 状态、没有 approve 入口。
+- **不挡着模型读你的密钥**：插件跑在你自己的账号里，配置文件是 0600 但和模型同一个 uid，
+  SFW 的沙箱允许读文件。自己装给自己用时这没什么——密钥本来就是你的；但**别把这个插件装在
+  要防着使用者的电脑上**，那种场景见下面「另一种装法」。
+
+## 出错了
+
+- 助手说「工具没连上」：SFW「定制化 →插件」里看这个插件还在不在、启用没有；再重开一个对话。
+- 助手念出「配置错误：…」：那句话里就写着要改哪个文件、改什么，照着做完重开对话。
+- 界面上这个 MCP 服务器起不来：多半是找不到 uv。把第一块那行重跑一次，然后重开对话。
+- 某家店那一行让你「对照『出错了』一节」：看那行括号里的英文——
+
+| 括号里是 | 意思 | 怎么办 |
+|---|---|---|
+| `LX_TRANSPORT_ERROR` | 网络没通，或领星太慢 | 过几分钟开新对话再问；一直这样就查网络和代理 |
+| `LX_GATEWAY_ERROR` | 领星拒绝了这次调用 | 先确认 `config.toml` 里的 `key` 还是领星后台现在那一个；key 没错，多半是领星改了接口，换新版本 |
+| `LX_BUSINESS_ERROR` | 调用收下了，但这家店查不了 | 去领星后台看这家店的广告授权还在不在 |
+| `SEARCH_TERM_RESULT_TOO_LARGE`<br>`SEARCH_TERM_PAGE_BUDGET_EXCEEDED` | 这家店这段时间的搜索词太多，一次拉不完 | 把 `config.toml` 里的 `lookback_days` 改小（比如 30 改成 14） |
+| 其余的码，或「取到了 N 行，但没有一组能判断」 | 领星给的数据和这一版认得的不一样 | 换新版本 |
+
+**换新版本**：到本仓库的 [tags](https://github.com/HelloYoung2025/ads-control-plane/tags)
+看有没有比你装的更新的版本号。有，就把「装」第二块里两处版本号换成它，整块重粘一遍；
+没有，就到 Issues 里贴上那串英文和日期（别贴 key 和店名）。领星 2026-09-23 就改过一次接口，`v0.1.0` 从那天起每次取数都被拒。
+
+## 另一种装法（管理员装给别人用）
+
+如果使用的人**不该看到领星密钥**（例如老板装给员工、家长装给孩子），插件形态挡不住——
+同一个账号、同一个 uid，模型能读到那个文件。那种场景要的是另一套东西：
+`packaging/build-pkg.sh` 出一个 `.pkg`，建系统用户 `_amazonads`、把密钥放在
+`/Library/Application Support/amazon-ads/config.toml`（属 `_amazonads`、0600）、
+用 LaunchDaemon 以那个用户常驻，SFW 那头按 HTTP 登记。用的人的账号读不到密钥，也写不了导出目录。
+
+这条路的代码和 `.pkg` 都在仓库里，但**到 2026-09-22 为止没有在任何机器上真装过一次**
+（要管理员密码）：命令步骤见 `amazon-ads install --help` 与 `bootstrap` / `setup-child`。
+别把它当成验证过的东西用。
+
+## 实测到哪一步了
+
+2026-09-22，在本机的 SFW 1.1.0（自带 codex-cli 0.153.4，引擎家目录 `~/.sfw/engine-home`）
+真装了一遍：上面第二块命令 →「定制化 →插件 →你的」里出现「亚马逊否定词 · 已安装」→
+「连接器」里出现 `amazon-ads`（引擎）→ 重开对话后一句大白话就触发了工具（25 秒）→
+配置没填时，模型把那句「配置错误：…」原样念了出来。
+
+再往下的链路在隔离的 `CODEX_HOME` 里逐段验过：`.mcp.json` 连同
+`startup_timeout_sec`/`tool_timeout_sec` 进入引擎 → 技能被发现并对模型可见 → 那段找 uv 的
+启动脚本把服务拉起来 → initialize / tools/list / tools/call 全通 → 从公开地址 `@v0.1.0`
+拉到 tag 指向的那个提交、编译、装好 29 个依赖 → 在一个全新的家目录里写出配置模板 →
+stdio 待命。依赖缓存全冷时第一次要 **159 秒**，所以启动超时写的是 600 秒。
+
+2026-09-23 第一次接真实领星数据（一个 74 家店的账号，30 天窗口，代码直接跑、没经过 SFW）：
+
+- 领星网关那天已经换了调用格式，`v0.1.0` 每次取数都被拒；`v0.1.1` 改过来后 74 家店 462 秒跑完。
+- 66 家「这段时间没有搜索词数据」：拿同一段时间的活动报表逐家核对，花费确实都是 0。
+- 7 家有数据、都「没有要否定的词」：逐组核对，没有一组零单的词攒到 25 次点击（最多 24 次）。
+- 1 家网络超时（`LX_TRANSPORT_ERROR`），单独再跑一次就好了。
+
+**验过但不通**：SFW 界面上的「安装」按钮，见上面「为什么不是在界面里点」。
+
+**截至 2026-09-23 还没验**：报表里的花费是不是按站点本币记的（门槛是按本币比的）；
+上面那条 `.pkg` 的路。
+
+另：宿主会自动升级（本机 2026-09-22 19:33 从 1.0.8 静默升到 1.1.0，设置→通用→应用更新可关）。
+
+---
+
+开发门禁：`uv run ruff format src tests && uv run ruff check src tests && uv run mypy && uv run pytest -q`。
+安全边界见 [SECURITY.md](SECURITY.md)。

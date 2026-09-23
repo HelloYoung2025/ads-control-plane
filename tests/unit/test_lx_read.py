@@ -3,7 +3,6 @@
 全部测试不触网络：网络层唯一入口 `_perform_call` 被假体替换并记录调用。
 """
 
-import json
 from collections.abc import Mapping
 from unittest.mock import patch
 
@@ -11,7 +10,6 @@ import httpx2
 import pytest
 
 from ads_control_plane.adapters.lx_read import (
-    DEFAULT_CATALOG_VERSION,
     READ_TOOL_ALLOWLIST,
     TOOL_PARAM_SPECS,
     LxBusinessError,
@@ -25,9 +23,11 @@ from ads_control_plane.adapters.lx_read import (
     parse_erp_envelope,
 )
 
+#: 外层信封取 2026-09-23 实测的改版后形态：{code: 1, success: true, msg}。
 AD_REPORT_OK: dict[str, object] = {
-    "code": 0,
-    "message": "ok",
+    "code": 1,
+    "success": True,
+    "msg": "操作成功",
     "data": {
         "traceId": "t-1",
         "recordsFiltered": 2,
@@ -37,8 +37,9 @@ AD_REPORT_OK: dict[str, object] = {
 }
 
 ERP_OK: dict[str, object] = {
-    "code": 0,
-    "message": "ok",
+    "code": 1,
+    "success": True,
+    "msg": "操作成功",
     "data": {
         "msg": "success",
         "code": 0,
@@ -53,10 +54,10 @@ class RecordingClient(LxMcpReadClient):
 
     def __init__(self, payload: Mapping[str, object] | None = None) -> None:
         super().__init__("http://lx.invalid/mcp", "sk-secret-key", min_interval_seconds=0)
-        self.calls: list[dict[str, str]] = []
+        self.calls: list[dict[str, object]] = []
         self._payload: Mapping[str, object] = payload if payload is not None else AD_REPORT_OK
 
-    def _perform_call(self, envelope: Mapping[str, str]) -> Mapping[str, object]:
+    def _perform_call(self, envelope: Mapping[str, object]) -> Mapping[str, object]:
         self.calls.append(dict(envelope))
         return self._payload
 
@@ -97,10 +98,8 @@ class TestReadOnlyAllowlist:
         for tool_id in READ_TOOL_ALLOWLIST:
             assert not tool_id.startswith(("put_", "post_"))
 
-    def test_param_specs_cover_exactly_the_allowlist_with_pinned_schema(self) -> None:
+    def test_param_specs_cover_exactly_the_allowlist(self) -> None:
         assert frozenset(TOOL_PARAM_SPECS) == READ_TOOL_ALLOWLIST
-        for tool_id, spec in TOOL_PARAM_SPECS.items():
-            assert spec.schema_version == f"{tool_id}-v1"
 
 
 class TestEncodeParams:
@@ -219,6 +218,39 @@ class TestAdReportEnvelope:
         assert e.value.code == "LX_ENVELOPE_SHAPE"
 
 
+class TestGatewayEnvelope:
+    """外层网关信封：2026-09-23 实测改版为 {code: 1, success: true, msg}。
+
+    改版前的代码只认 code == 0，于是把「操作成功」读成「网关拒绝：code=1 message=None」
+    ——message 是 None，是因为新版把它改名叫 msg。74 家店一家都跑不出来。
+    """
+
+    def test_new_shape_code_one_with_success_true_passes(self) -> None:
+        assert parse_ad_report_envelope(AD_REPORT_OK)["total"] == 2
+
+    def test_old_shape_code_zero_without_success_still_passes(self) -> None:
+        payload: dict[str, object] = {"code": 0, "message": "ok", "data": {"code": 0, "data": []}}
+        assert parse_ad_report_envelope(payload)["rows"] == []
+
+    def test_code_one_without_success_true_is_rejected(self) -> None:
+        """只凭 code=1 放行，会把哪天出现的「code=1 表示失败」当成成功。"""
+        for success in (None, False):
+            payload: dict[str, object] = {"code": 1, "success": success, "data": {"data": []}}
+            with pytest.raises(LxGatewayError):
+                parse_ad_report_envelope(payload)
+
+    def test_rejection_quotes_the_gateway_msg(self) -> None:
+        payload: dict[str, object] = {
+            "code": 102,
+            "success": False,
+            "msg": "工具参数定义已更新，请刷新工具列表后重新调用。",
+            "data": None,
+        }
+        with pytest.raises(LxGatewayError) as e:
+            parse_ad_report_envelope(payload)
+        assert "工具参数定义已更新" in str(e.value)
+
+
 class TestErpEnvelope:
     """erp_listing 三层信封：data.data.data={total, list}。"""
 
@@ -304,17 +336,19 @@ class TestAuthShopsEnvelope:
 
     def test_code_one_success_true_is_success(self) -> None:
         payload: dict[str, object] = {
-            "code": 0,
+            "code": 1,
+            "success": True,
+            "msg": "操作成功",
             "data": {
                 "msg": "success",
                 "traceId": "t-1",
                 "code": 1,
-                "data": [{"profile_id": "p-1", "sid": "s-1", "country": "US"}],
+                "data": [{"profile_id": "p-1", "sid": 1, "country": "US"}],
                 "success": True,
             },
         }
         page = parse_auth_shops_envelope(payload)
-        assert page["rows"] == [{"profile_id": "p-1", "sid": "s-1", "country": "US"}]
+        assert page["rows"] == [{"profile_id": "p-1", "sid": 1, "country": "US"}]
         assert page["total"] == 1
 
     def test_success_false_is_business_error(self) -> None:
@@ -336,23 +370,26 @@ class TestAuthShopsEnvelope:
 class TestClientBehaviour:
     """客户端行为：信封钉扎、按工具族路由、repr 脱敏、节流默认值。"""
 
-    def test_fetch_page_pins_catalog_schema_and_encodes_params(self) -> None:
+    def test_fetch_page_sends_exactly_tool_id_and_params_object(self) -> None:
+        """2026-09-23 实测 action 的入参只有 {toolId, params}，params 是对象。
+
+        再带 catalogVersion/schemaVersion，网关回 code=102「工具参数定义已更新」。
+        """
         client = RecordingClient()
         page = client.fetch_page("ad_campaign_group_report", {"with_ring": True, "length": 20})
         assert page["total"] == 2
         [envelope] = client.calls
-        assert set(envelope) == {"toolId", "catalogVersion", "schemaVersion", "paramsJson"}
-        assert envelope["toolId"] == "ad_campaign_group_report"
-        assert envelope["catalogVersion"] == DEFAULT_CATALOG_VERSION
-        assert envelope["schemaVersion"] == "ad_campaign_group_report-v1"
-        assert json.loads(envelope["paramsJson"]) == {"with_ring": 1, "length": 20}
+        assert envelope == {
+            "toolId": "ad_campaign_group_report",
+            "params": {"with_ring": 1, "length": 20},
+        }
 
     def test_fetch_page_routes_erp_listing_to_three_layer_parser(self) -> None:
         client = RecordingClient(payload=ERP_OK)
         page = client.fetch_page("erp_listing", {"offset": 0, "length": 20, "pvi_ids": ""})
         assert page["rows"] == [{"asin": "B0TEST"}]
         assert page["total"] == 1
-        assert client.calls[0]["schemaVersion"] == "erp_listing-v1"
+        assert client.calls[0]["toolId"] == "erp_listing"
 
     def test_repr_and_str_never_leak_key(self) -> None:
         client = RecordingClient()

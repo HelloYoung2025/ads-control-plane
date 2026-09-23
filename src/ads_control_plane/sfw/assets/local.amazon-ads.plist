@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- amazon-ads 的 LaunchDaemon 模板：installer.render_plist 把占位符填成绝对路径。
+     以 _amazonads 运行、KeepAlive 常驻；没有 EnvironmentVariables——密钥只在 config.toml 里。 -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>local.amazon-ads</string>
+	<key>UserName</key>
+	<string>_amazonads</string>
+	<key>GroupName</key>
+	<string>_amazonads</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>${venv_python}</string>
+		<string>-m</string>
+		<string>ads_control_plane.sfw</string>
+		<string>serve</string>
+		<string>--config</string>
+		<string>${config_path}</string>
+		<string>--port</string>
+		<string>${port}</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>WorkingDirectory</key>
+	<string>${working_directory}</string>
+	<key>StandardOutPath</key>
+	<string>${log_path}</string>
+	<key>StandardErrorPath</key>
+	<string>${log_path}</string>
+</dict>
+</plist>
