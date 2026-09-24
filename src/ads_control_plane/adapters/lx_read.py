@@ -22,13 +22,14 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 
 import httpx2
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
-from mcp.types import CallToolResult
+from mcp.shared.exceptions import MCPError
+from mcp.types import CONNECTION_CLOSED, CallToolResult
 
 #: 网关三元工具（help/search/action）中唯一被本客户端调用的执行入口。
 #: 2026-09-23 实测它的入参只有 {toolId, params}，params 是对象。改版前是
@@ -370,6 +371,31 @@ def _first_read_error(exc: BaseException) -> LxReadError | None:
     return None
 
 
+#: 连接断了是「没问到」，再问一次可能就好了。其余的 MCP 错误都是网关的回答——包括
+#: -32001：SDK 拿它表示本地超时，网关也可能拿它说「key 无效」；本地超时这里自己计时，
+#: 不走 SDK 的那个码（见 _call_action）。
+_NOT_ASKED_CODES = frozenset({CONNECTION_CLOSED})
+
+
+def _asked_again_may_help(status: int) -> bool:
+    return status >= 500 or status in (408, 429)
+
+
+def classify_mcp_error(exc: MCPError, statuses: Sequence[int], *, key: str) -> LxReadError:
+    """SDK 把 HTTP ≥400 和 JSON-RPC error 都变成 MCPError；这里把它分回「没问到」和「被拒」。
+
+    SDK 里 401、403、5xx 是同一句 INTERNAL_ERROR「Server returned an error response」，
+    分不出来，所以要看这次连接上见过的 HTTP 状态码：5xx（和 408/429）当网关一时出错，
+    可以再问；其余一律是网关的拒绝——错 key、错地址、http 协议、贴成了网页地址——
+    再问多少次都一样。2026-09-24 评审在假网关上复现：这些此前全被当成网络错误，
+    每页白问 3 次，网关原话一个字没留下。原话进消息之前先把 key 抹掉。
+    """
+    said = f"code={exc.code} {exc.message}".replace(key, "***")[:300]
+    if exc.code in _NOT_ASKED_CODES or any(_asked_again_may_help(s) for s in statuses):
+        return LxTransportError(f"gateway call failed at transport level: {said}")
+    return LxGatewayError(f"gateway refused the call: {said}", error_details=said)
+
+
 def _exception_summary(exc: BaseException) -> str:
     """异常类型名摘要（ExceptionGroup 递归展平），让超时之类的根因进错误消息。"""
     if isinstance(exc, BaseExceptionGroup):
@@ -456,7 +482,8 @@ class LxMcpReadClient:
 
         传输层异常统一归类为 LxTransportError：MCP 客户端跑在 anyio task group 里，
         底层超时会被包成 ExceptionGroup，不拆包就会以裸异常穿透成 HTTP 500，
-        调用方既看不出是超时还是缺数据，也拿不到带码分类。
+        调用方既看不出是超时还是缺数据，也拿不到带码分类。网关的拒绝在 _call_action
+        里就已分好类（classify_mcp_error），这里从组里把它原样拿出来。
         """
         try:
             return asyncio.run(self._call_action(envelope))
@@ -475,26 +502,41 @@ class LxMcpReadClient:
             ) from exc
 
     async def _call_action(self, envelope: Mapping[str, object]) -> Mapping[str, object]:
+        statuses: list[int] = []
+
+        async def note_status(response: httpx2.Response) -> None:
+            statuses.append(response.status_code)
+
         async with (
             httpx2.AsyncClient(
-                headers={"X-Mcp-Key": self._key}, timeout=self._timeout_seconds
+                headers={"X-Mcp-Key": self._key},
+                timeout=self._timeout_seconds,
+                event_hooks={"response": [note_status]},
             ) as http,
             streamable_http_client(self._url, http_client=http) as (read, write),
             ClientSession(read, write) as session,
         ):
-            await session.initialize()
-            result = await session.call_tool(ACTION_TOOL_NAME, dict(envelope))
+            try:
+                # 每次请求的上限。httpx 的超时是「两次收到字节之间」：网关用 SSE 回应、只发保活
+                # 不给结果时，没有这一条调用就永远挂着，两把锁一直占着，之后每问一次都是「上一次
+                # 查询还在跑」（2026-09-24 评审在假网关上复现）。超时抛 TimeoutError，归传输层。
+                async with asyncio.timeout(self._timeout_seconds):
+                    await session.initialize()
+                async with asyncio.timeout(self._timeout_seconds):
+                    result = await session.call_tool(ACTION_TOOL_NAME, dict(envelope))
+            except MCPError as exc:
+                raise classify_mcp_error(exc, statuses, key=self._key) from exc
             if not isinstance(result, CallToolResult):
                 raise LxGatewayError(
                     "gateway returned an unexpected MCP result type",
                     error_details=type(result).__name__,
                 )
             if result.is_error:
-                said = _content_text(result)
+                said = (_content_text(result) or "").replace(self._key, "***")
                 raise LxGatewayError(
                     # 网关原话（含 msg 与 traceId，不含 key）进消息：只放在 error_details
                     # 里时，日志只剩这半句，看不出是参数错、版本过期还是权限不够。
-                    f"gateway rejected the action call at MCP level: {(said or '')[:300]}",
+                    f"gateway rejected the action call at MCP level: {said[:300]}",
                     error_details=said,
                 )
             structured: object = result.structured_content

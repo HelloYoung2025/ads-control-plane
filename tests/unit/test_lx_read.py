@@ -3,12 +3,18 @@
 全部测试不触网络：网络层唯一入口 `_perform_call` 被假体替换并记录调用。
 """
 
-from collections.abc import Mapping
+import asyncio
+import contextlib
+import time
+from collections.abc import AsyncIterator, Mapping
 from unittest.mock import patch
 
 import httpx2
 import pytest
+from mcp.shared.exceptions import MCPError
+from mcp.types import INTERNAL_ERROR, METHOD_NOT_FOUND
 
+from ads_control_plane.adapters import lx_read
 from ads_control_plane.adapters.lx_read import (
     READ_TOOL_ALLOWLIST,
     TOOL_PARAM_SPECS,
@@ -17,6 +23,7 @@ from ads_control_plane.adapters.lx_read import (
     LxMcpReadClient,
     LxReadError,
     LxToolNotAllowed,
+    classify_mcp_error,
     encode_params,
     parse_ad_report_envelope,
     parse_auth_shops_envelope,
@@ -329,6 +336,92 @@ class TestTransportErrorClassification:
         with pytest.raises(LxReadError) as e:
             LxMcpReadClient(url="http://x", key="k", timeout_seconds=0)
         assert e.value.code == "LX_CONFIG_INVALID"
+
+
+#: SDK 对 HTTP ≥400 且响应体不是 JSON-RPC error 时给的那一句（mcp 2.1.1 / 2.2.0 相同）。
+HTTP_REFUSED = MCPError(INTERNAL_ERROR, "Server returned an error response")
+
+
+class TestGatewayRefusalIsNotANetworkError:
+    """错 key、错地址、http 协议、贴成网页地址：网关已经回答了，再问多少次都一样。
+
+    2026-09-24 评审在假网关上复现：这些此前全被归成 LX_TRANSPORT_ERROR，每页白问 3 次，
+    README 还让人去查网络；网关原话一个字没留下。
+    """
+
+    def test_a_4xx_refusal_is_a_gateway_error(self) -> None:
+        for status in (401, 403, 404):
+            got = classify_mcp_error(HTTP_REFUSED, [200, 202, status], key="k")
+            assert got.code == "LX_GATEWAY_ERROR", status
+
+    def test_a_wrong_path_is_a_gateway_error(self) -> None:
+        got = classify_mcp_error(MCPError(METHOD_NOT_FOUND, "Not Found"), [404], key="k")
+        assert got.code == "LX_GATEWAY_ERROR"
+
+    def test_server_trouble_is_worth_asking_again(self) -> None:
+        for status in (500, 502, 503, 429, 408):
+            assert classify_mcp_error(HTTP_REFUSED, [200, status], key="k").code == (
+                "LX_TRANSPORT_ERROR"
+            ), status
+
+    def test_minus_32001_from_the_gateway_is_the_gateway_talking(self) -> None:
+        """SDK 拿 -32001 表示本地超时，网关也可能拿它说「key 无效」（评审的假网关就这么回）。
+        本地超时我们自己计时（TimeoutError），所以收到的 -32001 只能是网关的回答。"""
+        said = MCPError(-32001, "X-Mcp-Key 无效或已过期")
+        assert classify_mcp_error(said, [200], key="k").code == "LX_GATEWAY_ERROR"
+
+    def test_the_gateways_words_are_kept_but_the_key_is_not(self) -> None:
+        said = MCPError(-32600, "Unauthorized: invalid X-Mcp-Key secret-abc")
+        got = classify_mcp_error(said, [401], key="secret-abc")
+        assert "Unauthorized: invalid X-Mcp-Key" in str(got)
+        assert "secret-abc" not in str(got)
+        assert "secret-abc" not in str(getattr(got, "error_details", ""))
+
+    @staticmethod
+    def _through_the_client(initialize: object, *, timeout: float = 60.0) -> LxReadError:
+        """走一遍真的 _call_action，只换掉传输与会话（不触网）。"""
+
+        @contextlib.asynccontextmanager
+        async def no_network(url: str, http_client: object) -> AsyncIterator[tuple[None, None]]:
+            yield (None, None)
+
+        class Session:
+            def __init__(self, read: object, write: object) -> None:
+                self.initialize = initialize
+
+            async def __aenter__(self) -> "Session":
+                return self
+
+            async def __aexit__(self, *exc: object) -> None:
+                return None
+
+        client = LxMcpReadClient(
+            url="http://x", key="k", min_interval_seconds=0, timeout_seconds=timeout
+        )
+        with (
+            patch.object(lx_read, "streamable_http_client", no_network),
+            patch.object(lx_read, "ClientSession", Session),
+            pytest.raises(LxReadError) as e,
+        ):
+            client.fetch_page("ad_campaign_report", {"page": 1})
+        return e.value
+
+    def test_the_refusal_keeps_its_class_on_the_way_out_of_the_session(self) -> None:
+        async def refuse() -> None:
+            raise HTTP_REFUSED
+
+        assert self._through_the_client(refuse).code == "LX_GATEWAY_ERROR"
+
+    def test_a_request_that_never_answers_times_out_as_a_network_error(self) -> None:
+        """网关只发保活、不给结果：没有每次请求的上限，线程和两把锁会一直占着。"""
+
+        async def hang() -> None:
+            await asyncio.sleep(30)
+
+        started = time.monotonic()
+        got = self._through_the_client(hang, timeout=0.2)
+        assert got.code == "LX_TRANSPORT_ERROR"
+        assert time.monotonic() - started < 5
 
 
 class TestAuthShopsEnvelope:
