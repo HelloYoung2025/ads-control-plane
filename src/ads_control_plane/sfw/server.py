@@ -1,7 +1,9 @@
-"""一个只读工具的回环 MCP 组件：SFW → http://127.0.0.1:8790/mcp → find_wasted_search_terms。
+"""只读 MCP 组件：SFW → find_wasted_search_terms（两种形态都有），插件形态另有 operator_say。
 
-- **只有一个工具、没有参数**。店铺、门槛、导出目录全部来自配置文件；模型没有机会编一个
-  profile_id 进来（工具参数不含身份）。
+- **find_wasted_search_terms 没有参数**。店铺、门槛、导出目录全部来自配置文件；模型没有机会
+  编一个 profile_id 进来（工具参数不含身份）。
+- **operator_say 只收人的一句原话**（插件形态）：插件确定性地认（sfw/parse.py），认不出就回
+  「没听懂」；店只能是配置店铺表里的店。模型不替人翻译店名、编号和百分比。
 - **Bearer 校验是一层纯 ASGI 中间件**，不 import starlette，也不用 SDK 的 AuthSettings /
   TokenVerifier——那条路要 issuer_url 占位符并挂一套 OAuth 元数据端点，本组件只在回环上
   服务一个客户端，一个口令就够。口令每次请求都从配置文件现读：配置换了口令不用重启，
@@ -19,15 +21,12 @@
 from __future__ import annotations
 
 import contextlib
-import fcntl
 import hmac
 import logging
-import os
 import sys
 import threading
-import time
 import tomllib
-from collections.abc import Awaitable, Callable, Iterator, MutableMapping
+from collections.abc import Awaitable, Callable, MutableMapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -37,6 +36,8 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
 from ads_control_plane.sfw.config import ConfigError, PackConfig, check_private_file, load_config
+from ads_control_plane.sfw.lxlock import RUN_LOCK_NAME, one_process_at_a_time
+from ads_control_plane.sfw.operator import Operator
 from ads_control_plane.sfw.service import (
     SYSTEM_WORDING,
     Wording,
@@ -51,8 +52,6 @@ logger = logging.getLogger("ads_control_plane.sfw")
 SERVER_NAME = "amazon-ads"
 #: 第二次调用最多在锁上等多久；超了就用一句人话打发，不让它静默等到工具超时。
 LOCK_WAIT_SECONDS = 30.0
-#: 跨进程那把锁的文件名，放在运行记录旁边：那一层两种形态下都是本服务自己写的。
-RUN_LOCK_NAME = ".running.lock"
 #: 点过「停止」的人也会撞上它：停止只停模型，工具在插件进程里照跑（2026-09-24 实测），
 #: 所以不能叫人「等它出结果」——那个结果不会再出现在任何对话里。
 BUSY = (
@@ -79,6 +78,20 @@ DISCIPLINE = "\n".join(
 )
 INSTRUCTIONS = DISCIPLINE
 TOOL_DESCRIPTION = DISCIPLINE
+
+OPERATOR_TOOL = "operator_say"
+
+#: 插件形态多出来的那一段：模型只是传话人。同一份文字进工具 description 与 instructions。
+OPERATOR_RULES = "\n".join(
+    [
+        "你还替「广告操盘手」传话。规矩：",
+        "1. 除了上面第 1 条那句话，人说的任何话都原样交给 operator_say：text 就是人的原话，"
+        "一字不改，不补全、不翻译，不猜店名、编号和百分比。一轮对话只调一次。",
+        "2. 它回什么就原样回什么，链接照抄，不增不减，不解释。",
+        "3. 它只看、不改广告：永远不说它改了、调了、降了、加了任何出价。",
+    ]
+)
+PLUGIN_INSTRUCTIONS = DISCIPLINE + "\n\n" + OPERATOR_RULES
 
 Scope = MutableMapping[str, Any]
 Message = MutableMapping[str, Any]
@@ -186,31 +199,9 @@ class _SourceHolder:
         return self._source
 
 
-@contextlib.contextmanager
-def _one_process_at_a_time(lock_path: Path) -> Iterator[bool]:
-    """跨进程的那把锁：拿到了 yield True，等满 LOCK_WAIT_SECONDS 还拿不到 yield False。
-
-    插件形态下 SFW 每个对话各拉一个进程，进程里那把 threading.Lock 管不到别的对话：
-    两个对话同时问，就是两个进程拿同一把领星 key 并发取数（QPS=1）、同时写运行记录
-    （2026-09-23 Codex 复审 P2）。flock 跟着打开的文件走，进程死了锁自己就放了。
-    """
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
-    try:
-        deadline = time.monotonic() + LOCK_WAIT_SECONDS
-        while True:
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                if time.monotonic() >= deadline:
-                    yield False
-                    return
-                time.sleep(0.2)
-            else:
-                yield True
-                return
-    finally:
-        os.close(fd)
+def _one_process_at_a_time(lock_path: Path) -> contextlib.AbstractContextManager[bool]:
+    # 每次调用现读 LOCK_WAIT_SECONDS：测试会把它调小。
+    return one_process_at_a_time(lock_path, LOCK_WAIT_SECONDS)
 
 
 def build_server(
@@ -221,15 +212,22 @@ def build_server(
     source_factory: Callable[[PackConfig], SearchTermReadPort] | None = None,
     fix_hint: str = "找管理员",
     wording: Wording = SYSTEM_WORDING,
+    operator: Operator | None = None,
 ) -> MCPServer[Any]:
-    """唯一的工具。ConfigError → ToolError("配置错误：…，<fix_hint>")；其余带码错误逐店进文本。
+    """找否定词的工具。ConfigError → ToolError("配置错误：…，<fix_hint>")；其余带码错误逐店进文本。
+
+    operator 只在插件形态传进来：多挂一个 operator_say。系统形态（给别人装、常驻 HTTP）
+    仍然只有一个工具。
 
     fix_hint 是那句话的结尾，两种形态不一样：系统形态下改配置要 sudo，用的人改不了，
     只能「找管理员」；插件形态是自己装给自己用的，得告诉他自己去改哪儿。
     纪律第 4 条要求模型把这句话原样念出来，所以它是直接给人看的。
     wording 是逐店那几行里随形态变的话，理由同上（见 service.Wording）。
     """
-    server: MCPServer[Any] = MCPServer(name=SERVER_NAME, instructions=INSTRUCTIONS)
+    server: MCPServer[Any] = MCPServer(
+        name=SERVER_NAME,
+        instructions=INSTRUCTIONS if operator is None else PLUGIN_INSTRUCTIONS,
+    )
     sources = _SourceHolder(source_factory if source_factory is not None else build_source)
     # 同步工具函数由 SDK 放进工作线程跑：两个对话同时敲 /fd 就是两个线程。一把锁让第二个
     # 等第一个跑完再拿缓存，而不是两边并发打领星（QPS=1）、各建一个数据源。
@@ -258,6 +256,12 @@ def build_server(
             return summarize(runs, cfg, wording)
         finally:
             run_lock.release()
+
+    if operator is not None:
+
+        @server.tool(name=OPERATOR_TOOL, description=OPERATOR_RULES)
+        def operator_say(text: str) -> str:
+            return operator.say(text)
 
     return server
 

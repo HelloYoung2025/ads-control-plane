@@ -7,7 +7,9 @@
 
 1. `src/` 里 generate_negation_candidates 只有定义它的那一处与 sfw/service.py 里那一个
    调用点——它只在 SFW 里的人敲 /fd、模型调一次工具时才跑；没有第三处；
-2. 没有调度器依赖，也没有定时器/后台任务。
+2. 广告操盘手「看一遍」（run_goal）只在 sfw/operator.py 里被调用：人在 SFW 里说一句
+   「现在看一遍」才跑（2026-09-24 起，只看不动）；
+3. 没有调度器依赖，也没有定时器/后台任务。
 
 事实若变了（比如长出一个「每天自己跑」的入口），README 与模型面文字里
 「不到点自己跑」那句就成了假话，这条测试会先红。
@@ -34,6 +36,14 @@ def test_nothing_in_the_repo_runs_the_strategy_on_a_schedule() -> None:
         "src/ads_control_plane/sfw/service.py",
         "src/ads_control_plane/strategies/negation.py",
     ], f"多出了调用点：{callers}——若是新增了排程，「不会自己运行」就成了假话"
+    looks = sorted(
+        p.relative_to(_ROOT).as_posix()
+        for p in (_ROOT / "src").rglob("*.py")
+        if "run_goal(" in p.read_text(encoding="utf-8")
+    )
+    assert looks == ["src/ads_control_plane/sfw/operator.py"], (
+        f"「看一遍」多出了入口：{looks}——若是新增了按时自己看，先改 README 与回答里的话"
+    )
     pyproject = (_ROOT / "pyproject.toml").read_text(encoding="utf-8").lower()
     for dep in ("apscheduler", "celery", "croniter", "schedule"):
         assert dep not in pyproject, f"引入了 {dep}：先改文案再谈排程"

@@ -3,6 +3,8 @@
 SFW 电商 Pack 里的**亚马逊否定词组件**，做成一个 SFW 插件：装上之后，你在 SFW 里问一句
 「找出所有店铺里花了钱却没出单的搜索词」，它读领星的搜索词报表，写出否定词 CSV 和一份报表。
 
+v0.2.0 起还带一个只看不动的「广告操盘手」，见下面同名一节。
+
 **它不改你的广告。** 否定词只在你照 CSV 在领星「否定词」里加上之后才生效，那一步在本组件之外、由人做。
 本仓库按 [MIT 许可证](LICENSE) 开源（v0.1.0 同样适用），不提供任何担保，出了问题自负。
 与 Amazon、领星没有隶属关系。
@@ -36,9 +38,9 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 export CODEX_HOME=~/.sfw/engine-home
 C=/Applications/SFW.app/Contents/Frameworks/vendor/bin/codex
 "$C" plugin marketplace remove ecom-pack 2>/dev/null
-"$C" plugin marketplace add HelloYoung2025/ads-control-plane@v0.1.3 &&
+"$C" plugin marketplace add HelloYoung2025/ads-control-plane@v0.2.0 &&
 "$C" plugin add amazon-ads@ecom-pack &&
-uv tool install --force "git+https://github.com/HelloYoung2025/ads-control-plane@v0.1.3" &&
+uv tool install --force "git+https://github.com/HelloYoung2025/ads-control-plane@v0.2.0" &&
 echo "装好了，现在打开 SFW"
 ```
 
@@ -48,7 +50,7 @@ echo "装好了，现在打开 SFW"
 装好以后 SFW 拉起组件不用联网；跳过它也能用，但每次拉起都要现连 GitHub 和 PyPI，
 哪个连不上就起不来（2026-09-24 实测）。
 
-两处 `@v0.1.3` 别删：它钉住你装的是哪一版。只换版本号、不先挪掉旧的，会报
+两处 `@v0.2.0` 别删：它钉住你装的是哪一版。只换版本号、不先挪掉旧的，会报
 「already added from a different source」（2026-09-23 实测），所以第三行不能省。
 
 为什么先退出 SFW：它的引擎只在启动时读插件。2026-09-24 实测，升级后没退出 SFW，
@@ -92,7 +94,7 @@ open -e ~/.amazon-ads/config.toml
    配置文件的最后面；再照它说的，给出现的每个币种在 `[thresholds.min_spend]` 里各填一档门槛。
 
    ```bash
-   uvx --from git+https://github.com/HelloYoung2025/ads-control-plane@v0.1.3 amazon-ads shops --config ~/.amazon-ads/config.toml
+   uvx --from git+https://github.com/HelloYoung2025/ads-control-plane@v0.2.0 amazon-ads shops --config ~/.amazon-ads/config.toml
    ```
 
 3. **门槛**（可以不动）：`[thresholds]` 里是回看天数、最少点击数、按币种的最低花费。
@@ -123,6 +125,37 @@ open -e ~/.amazon-ads/config.toml
 - `报表-<昵称>-<日期>-<指纹8>.html`：给人看的。每个候选词的花费、点击、曝光与订单（都是 0）、
   统计区间；否定词挡不住的 ASIN（要去领星「否定投放」单独处理）；生效的门槛；和 CSV 同一个指纹。
 - `~/.amazon-ads/运行记录.csv`：每跑完一家店追加一行（时间、店铺、结局、各项数量、指纹、CSV 文件名）。
+
+## 广告操盘手（只看不动）
+
+把一个商品交给它，它去领星看这个商品的全部 SP 广告，记住每个关键词和投放的出价，判断「让我改的话
+会改哪几处」，写进当天的报告。**这一版一分钱不动**：只看、只记，要改由人在领星里改。
+
+在 SFW 里一次说一句：
+
+| 说 | 它做 |
+|---|---|
+| `管 美国1店 B0XXXXXXXX 叫 猫抓板` | 大人把商品交给它（店名照配置里的 `nickname`），以后只说小名 |
+| `猫抓板现在看一遍` | 马上去领星看一遍；只说「现在看一遍」就把交给它的都看一遍 |
+| `看今天` | 每个商品一盏灯 |
+| `猫抓板最多25%` | ACOS 上限，10% 到 40%；不说就按近 14 天的 ACOS × 0.9 定 |
+| `全部停下` / `继续干活` | 停下 / 接着来 |
+| `不管猫抓板了` | 不再看它，记录留着 |
+| `我能说什么` | 列出能说的话 |
+
+回答第一行是一盏灯：绿灯没事、黄灯看一眼、红灯叫大人、关灯在休息。点回答里的蓝字打开当天的报告
+（`~/广告操盘手/<日期>.html`）。它记得的东西在 `~/.amazon-ads/operator.sqlite3`，重装插件不丢。
+看一个商品要问领星约 10 次，每次 3 到 6 秒（2026-09-24 实测单次）。
+
+它不碰：领星的自动规则、分时策略或模板在管的（判断不清也算在管）；和别的商品共用的广告组；
+用广告组默认出价的词；建了不到 17 天的；有人改过出价的，14 天内不碰。它只用上次改动之后的新数据，
+所以同一个词两次「本来会改」之间至少隔 10 天；30 天里来回掉头两次，这个词冻结 30 天。
+
+还做不到的：
+
+- 不会按时自己看：每一轮都是有人说一句发起的。
+- 一天里多看几遍，拿到的是同一份数据：订单要几天才记全，统计只到 3 天前。
+- 转化率掉了只亮黄灯提醒：价格、评价、图片、库存它管不了。
 
 ## 不承诺什么
 

@@ -23,6 +23,8 @@ _SPEAKS_TO_HUMANS = (
     "src/ads_control_plane/sfw/service.py",
     "src/ads_control_plane/sfw/report.py",
     "src/ads_control_plane/sfw/server.py",
+    "src/ads_control_plane/sfw/operator.py",
+    "src/ads_control_plane/sfw/diary.py",
     "src/ads_control_plane/sfw/assets/AGENTS.md",
     "README.md",
 )

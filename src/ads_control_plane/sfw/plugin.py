@@ -16,6 +16,7 @@ import os
 import secrets
 import sys
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 
 from ads_control_plane.sfw.config import (
@@ -24,6 +25,8 @@ from ads_control_plane.sfw.config import (
     TEMPLATE_HEADER_USER,
     USER_CONFIG_PATH,
     USER_EXPORT_DIR,
+    USER_OPERATOR_DB,
+    USER_REPORT_DIR,
     USER_RUN_LOG,
     render_config_template,
     user_shops_command,
@@ -93,12 +96,27 @@ def main() -> int:
         stream=sys.stderr,
     )
     # 延迟 import：拉起 MCP 服务端要花时间，而上面那些路径活儿不需要它。
+    from ads_control_plane.adapters.lx_read import LxMcpReadClient
+    from ads_control_plane.sfw.operator import Operator, Setup
     from ads_control_plane.sfw.server import build_server
 
     path = USER_CONFIG_PATH
     if ensure_config(path):
         logger.info("第一次启动，已写配置模板：%s（填 [lingxing] 的 url 与 key）", path)
-    server = build_server(path, expect_uid=os.getuid(), fix_hint=FIX_HINT, wording=PLUGIN_WORDING)
+    operator = Operator(
+        Setup(
+            config_path=path,
+            expect_uid=os.getuid(),
+            memory_path=USER_OPERATOR_DB,
+            report_dir=USER_REPORT_DIR,
+            fix_hint=FIX_HINT,
+            read_port=lambda cfg: LxMcpReadClient(cfg.lingxing_url, cfg.lingxing_key),
+            now=lambda: datetime.now(UTC),
+        )
+    )
+    server = build_server(
+        path, expect_uid=os.getuid(), fix_hint=FIX_HINT, wording=PLUGIN_WORDING, operator=operator
+    )
     logger.info("amazon-ads 以 stdio 待命；配置 %s", path)
     server.run(transport="stdio")
     return 0
