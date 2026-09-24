@@ -64,6 +64,14 @@ TARGETED_TYPE_NOT_NEGATIVED = "not_negatived"
 #: 一次取数就会超时，工具在真实店铺上直接不可用。
 DEFAULT_PAGE_SIZE = 1000
 
+#: 网络层失败（连接/读取超时、TLS、DNS）是「没问到」，同一页再问一次多半就问到了；
+#: 网关与业务错误是「问到了、被拒」，再问还是同一句，不重试。2026-09-23 真实运行
+#: 74 家店里有 1 家撞上它，整店记为取数失败，原样重跑就好了。按码认它而不 import
+#: adapters（依赖方向见模块 docstring）；两次询问之间的间隔由读端口自己保证——
+#: LxMcpReadClient 无论成败都停满调用间隔。
+RETRYABLE_UPSTREAM_CODE = "LX_TRANSPORT_ERROR"
+UPSTREAM_ATTEMPTS = 3
+
 
 class LxReadPort(Protocol):
     def fetch_page(self, tool_id: str, params: Mapping[str, object]) -> Mapping[str, object]: ...
@@ -464,20 +472,26 @@ class LingxingSearchTermSource:
 
         按 duck typing 取 .code 而不 import adapters：本模块刻意不认识具体适配器
         （见模块 docstring 的依赖方向约定），而 LX_TRANSPORT_ERROR 这些码已经在
-        UI 词典里，原样保留才能让人查得到。
+        UI 词典里，原样保留才能让人查得到。只有「没问到」（RETRYABLE_UPSTREAM_CODE）
+        会就同一页再问，最多问 UPSTREAM_ATTEMPTS 次。
         """
-        try:
-            return self._read_port.fetch_page(
-                TOOL_SEARCH_TERM_REPORT, self._build_params(binding, window, page)
-            )
-        except SearchTermSourceError:
-            raise
-        except Exception as exc:
-            code = getattr(exc, "code", None)
-            raise _reject(
-                code if isinstance(code, str) and code else "SEARCH_TERM_UPSTREAM_ERROR",
-                f"upstream read failed on page {page}: {type(exc).__name__}",
-            ) from exc
+        params = self._build_params(binding, window, page)
+        attempt = 1
+        while True:
+            try:
+                return self._read_port.fetch_page(TOOL_SEARCH_TERM_REPORT, params)
+            except SearchTermSourceError:
+                raise
+            except Exception as exc:
+                code = getattr(exc, "code", None)
+                if code == RETRYABLE_UPSTREAM_CODE and attempt < UPSTREAM_ATTEMPTS:
+                    attempt += 1
+                    continue
+                raise _reject(
+                    code if isinstance(code, str) and code else "SEARCH_TERM_UPSTREAM_ERROR",
+                    f"upstream read failed on page {page} after {attempt} attempt(s): "
+                    f"{type(exc).__name__}",
+                ) from exc
 
     def _build_params(
         self, binding: LingxingProfileBinding, window: _Window, page: int
