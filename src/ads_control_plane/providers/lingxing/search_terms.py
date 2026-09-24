@@ -428,18 +428,14 @@ class LingxingSearchTermSource:
                 if isinstance(rows_obj, list)
                 else []
             )
-            if not rows:
-                break
             collected.extend(rows)
             # 只数**去重后的数据行**。两种东西会把这个计数撑虚，都会让
             # data_rows >= source_total 提前成立、末页没拉就宣告拉全：
             #   1. 汇总行——实测 total=2090 而每页返回 101 行，汇总行不计入 total；
             #   2. 跨页重复行——按花费排序翻页时行排名会移动（实测同窗口 total
             #      从 1047 漂到 1079），同一行可能在两页各出现一次。
-            # 静默截断在这里不是「看不全」：漏掉的那页若携带某个词的 orders=2，
-            # 聚合出的 conversions 就是 0，正在出单的词被判死刑。
-            # 宁可少算（多打一页，末页为空自然停），绝不多算。
             # 身份判定与解析阶段共用 _row_identity，两处分叉就会各算各的。
+            fresh = 0
             for row in rows:
                 if _is_summary_row(row):
                     continue
@@ -447,8 +443,11 @@ class LingxingSearchTermSource:
                 if identity in counted:
                     continue
                 counted.add(identity)
-                data_rows += 1
-            if source_total is not None and data_rows >= source_total:
+                fresh += 1
+            data_rows += fresh
+            # 一页没带来新数据行（空页、只有汇总行、全是上一页见过的行）就不再往后翻：
+            # 再翻也只是把越界页一页页问到页数上限。
+            if fresh == 0 or (source_total is not None and data_rows >= source_total):
                 break
             if page >= self._max_pages:
                 raise _reject(
@@ -457,6 +456,16 @@ class LingxingSearchTermSource:
                     "a truncated set would silently invert conclusions",
                 )
             page += 1
+        if source_total is not None and data_rows < source_total:
+            # 总数不变时，一行在两页各出现一次，就必有另一行两页都没拿到。漏掉的那行
+            # 若携带某个词的 orders=2，聚合出的 conversions 就是 0，正在出单的词被判
+            # 死刑——所以对不上就整家店不给结论。2026-09-23/24 两轮真实运行的 14 份
+            # 报表里，去重后的行数都正好等于 total（包括要翻 3 页的店）。
+            raise _reject(
+                "SEARCH_TERM_PAGES_SHORT",
+                f"paged through {data_rows} of {source_total} rows; rows moved between pages, "
+                "so one that carries orders may be missing",
+            )
         return collected, source_total
 
     def _fetch_one_page(
@@ -487,10 +496,12 @@ class LingxingSearchTermSource:
                 if code == RETRYABLE_UPSTREAM_CODE and attempt < UPSTREAM_ATTEMPTS:
                     attempt += 1
                     continue
+                # 带上上游原话（截断）：只有类型名时，日志里看不出是 key 错了、参数错了
+                # 还是网关挂了。适配器的消息里不含 key。
                 raise _reject(
                     code if isinstance(code, str) and code else "SEARCH_TERM_UPSTREAM_ERROR",
                     f"upstream read failed on page {page} after {attempt} attempt(s): "
-                    f"{type(exc).__name__}",
+                    f"{type(exc).__name__}: {str(exc)[:300]}",
                 ) from exc
 
     def _build_params(

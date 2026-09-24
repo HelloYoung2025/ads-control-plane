@@ -22,6 +22,7 @@ from ads_control_plane.canonical.entity import (
 from ads_control_plane.canonical.ids import new_canonical_id
 from ads_control_plane.canonical.money import Money
 from ads_control_plane.strategies.negation import (
+    AbstainReason,
     CandidateSetError,
     CandidateSetState,
     NegationCandidateSet,
@@ -174,6 +175,51 @@ class TestEvidenceGate:
         with pytest.raises(CandidateSetError) as exc:
             generate_negation_candidates([eur], make_pack(), NOW, new_canonical_id)
         assert exc.value.code == "CURRENCY_MISMATCH"
+
+
+class TestPluralSiblings:
+    """否定精准连单复数一起挡：同组在卖的那个写法不能被一起否掉（2026-09-24 评审 P0）。"""
+
+    @pytest.mark.parametrize(
+        ("wasted", "selling"),
+        [
+            ("bamboo cutting boards", "bamboo cutting board"),
+            ("bamboo cutting board", "Bamboo Cutting Boards"),
+            ("shoe rack", "shoes rack"),
+            ("battery pack", "batteries pack"),
+            ("glass jar", "glasses jar"),
+            ("ｗｉｄｇｅｔ box", "widget  boxes"),
+        ],
+    )
+    def test_a_selling_plural_sibling_in_the_same_ad_group_blocks_the_candidate(
+        self, wasted: str, selling: str
+    ) -> None:
+        records = [make_record(term=wasted), make_record(term=selling, clicks=44, conversions=6)]
+        result = generate_negation_candidates(records, make_pack(), NOW, new_canonical_id)
+        assert result.candidates == ()
+        [abstain] = result.abstains
+        assert abstain.reason is AbstainReason.CLOSE_VARIANT_CONVERTS
+        assert abstain.search_term == wasted
+        assert selling in abstain.detail
+
+    def test_a_sibling_selling_in_another_ad_group_does_not_matter(self) -> None:
+        """否定加在广告组上，别的组里在卖挡不到这里。"""
+        records = [
+            make_record(term="cutting boards", ad_group="ag-1"),
+            make_record(term="cutting board", ad_group="ag-2", conversions=3),
+        ]
+        result = generate_negation_candidates(records, make_pack(), NOW, new_canonical_id)
+        assert [c.search_term for c in result.candidates] == ["cutting boards"]
+        assert result.abstains == ()
+
+    @pytest.mark.parametrize("selling", ["cutting board holder", "cutting", "cutting mat"])
+    def test_a_different_term_that_sells_does_not_block(self, selling: str) -> None:
+        records = [
+            make_record(term="cutting board"),
+            make_record(term=selling, conversions=3),
+        ]
+        result = generate_negation_candidates(records, make_pack(), NOW, new_canonical_id)
+        assert [c.search_term for c in result.candidates] == ["cutting board"]
 
 
 class TestParameterWhitelist:

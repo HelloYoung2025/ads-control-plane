@@ -202,12 +202,16 @@ def test_missing_total_is_refused_not_read_as_an_honest_zero() -> None:
 def test_rows_repeated_across_pages_are_counted_once() -> None:
     """按花费排序翻页时行的排名会移动，同一行可能在两页出现。
     而聚合是求和——重复行会把 clicks/spend 直接翻倍。"""
+    first = term_row(query="first widget")
     row = term_row(clicks=10, spends="5.00")
-    source, _ = make_source([[row], [dict(row)]], total=2, page_size=1)
+    last = term_row(query="last widget")
+    # total 只数不同的数据行：B 在两页各出现一次，它仍只是一行。
+    source, _ = make_source([[first, row], [dict(row), last]], total=3, page_size=2)
     got = fetch_all(source)
-    assert len(got.records) == 1
-    assert got.records[0].clicks == 10
-    assert got.records[0].spend.amount == Decimal("5.00")
+    assert len(got.records) == 3
+    repeated = next(r for r in got.records if r.search_term == "cheap widget")
+    assert repeated.clicks == 10
+    assert repeated.spend.amount == Decimal("5.00")
     assert got.duplicate_rows == 1
 
 
@@ -217,7 +221,7 @@ def test_rows_repeated_across_pages_are_counted_once() -> None:
 def test_summary_row_is_skipped_and_never_becomes_a_search_term() -> None:
     """汇总行携带的是全店聚合值。若被 str(None) 兜底成一个叫 "None" 的词，
     它必然过任何证据门，且花费最大会排在导出 CSV 最前面，最先被人批准。"""
-    source, _ = make_source([[summary_row(), term_row()]], total=2)
+    source, _ = make_source([[summary_row(), term_row()]], total=1)
     got = fetch_all(source)
     records = got.records
     assert len(records) == 1
@@ -231,7 +235,7 @@ def test_summary_row_is_skipped_and_never_becomes_a_search_term() -> None:
 def test_summary_and_data_rows_parse_despite_differing_metric_types() -> None:
     """汇总行 clicks 是 str '2437'、数据行是 int 40——解析器绝不能靠类型区分它们，
     判据只看身份字段。"""
-    source, _ = make_source([[summary_row(), term_row(clicks=40)]], total=2)
+    source, _ = make_source([[summary_row(), term_row(clicks=40)]], total=1)
     got = fetch_all(source)
     assert got.records[0].clicks == 40
     assert got.skipped_summary_rows == 1
@@ -624,7 +628,7 @@ def test_a_row_with_neither_query_nor_ad_group_is_a_summary_row_not_a_bad_row() 
     （红灯永远不灭），要么把畸形行当汇总行悄悄扔掉（浪费从此无人再提）。
     """
     source, _ = make_source(
-        [[term_row(query="", ad_group_id=""), term_row(query="widget holder")]], total=2
+        [[term_row(query="", ad_group_id=""), term_row(query="widget holder")]], total=1
     )
     got = fetch_all(source)
     assert [r.search_term for r in got.records] == ["widget holder"]
@@ -776,12 +780,41 @@ def test_the_same_row_on_two_pages_is_still_one_row() -> None:
     """跨页重复仍要去掉：按花费排序翻页时行排名会移动，同一行可能在两页各出现一次。
     record_id 是源侧行主键（实测 32 字符、同页两次取回集合与顺序完全一致），
     重复行会带着同一个 id 回来。"""
+    first = term_row(record_id="r-1", query="first widget")
     row = term_row(record_id="r-7", clicks=10, spends="5.00")
-    source, _ = make_source([[row], [dict(row)]], total=2, page_size=1)
+    last = term_row(record_id="r-9", query="last widget")
+    source, _ = make_source([[first, row], [dict(row), last]], total=3, page_size=2)
     got = fetch_all(source)
-    assert len(got.records) == 1
-    assert got.records[0].clicks == 10
+    assert len(got.records) == 3
+    assert next(r for r in got.records if r.search_term == "cheap widget").clicks == 10
     assert got.duplicate_rows == 1
+
+
+def test_a_row_squeezed_out_between_pages_fails_the_shop_instead_of_going_missing() -> None:
+    """总数不变时，一行在两页各出现一次，就必有另一行两页都没拿到。漏掉的那行若带着
+    订单，同组聚合出的 conversions 就是 0，正在出单的词会被列成否定候选。"""
+    first = term_row(record_id="r-1", clicks=40, orders=0, spends="35.00")
+    shown_twice = term_row(record_id="r-3", query="other widget")
+    # 第 1 页取完后名次互换：r-3 在两页都出现，而同组那行带 1 单的 r-2 两页都没有。
+    # 此前这样也判「拉全」，r-1 的「40 次点击、0 单」就成了否定候选。
+    source, port = make_source([[first, shown_twice], [dict(shown_twice)]], total=3, page_size=2)
+    with pytest.raises(SearchTermSourceError) as exc:
+        fetch_all(source)
+    assert exc.value.code == "SEARCH_TERM_PAGES_SHORT"
+    assert len(port.calls) == 2
+
+
+def test_a_page_that_brings_nothing_new_stops_paging() -> None:
+    """越界页只回一行汇总行时，此前会一页页问到页数上限（40 页）才报错。"""
+    source, port = make_source(
+        [[term_row(record_id="r-1"), term_row(record_id="r-2", query="b")], [summary_row()]],
+        total=3,
+        page_size=2,
+    )
+    with pytest.raises(SearchTermSourceError) as exc:
+        fetch_all(source)
+    assert exc.value.code == "SEARCH_TERM_PAGES_SHORT"
+    assert len(port.calls) == 2
 
 
 def test_cross_page_duplicates_do_not_end_paging_early() -> None:
@@ -857,13 +890,11 @@ def test_the_row_account_balances_against_source_total() -> None:
         term_row(query="no identity", ad_group_id=None, campaign_id=None),  # 归属不明
         healthy_row(),
     ]
-    source, _ = make_source([rows], total=len(rows))
+    # 上游的 total 不数汇总行，也不数跨页重复的那一次（2026-09-23/24 真实报表的口径）。
+    source, _ = make_source([rows], total=4)
     got = fetch_all(source)
-    assert got.source_total == len(rows)
-    assert (
-        got.skipped_summary_rows + got.duplicate_rows + got.unreadable_rows + got.usable_rows
-        == got.source_total
-    )
+    assert got.source_total == 4
+    assert got.unreadable_rows + got.usable_rows == got.source_total
     # 每一格都得对得上号，否则「填平」可以靠把差额塞进任意一格来伪造。
     assert got.skipped_summary_rows == 1
     assert got.duplicate_rows == 1
@@ -1024,8 +1055,9 @@ class _LatchRow(dict):  # type: ignore[type-arg]
     所以只有解析阶段能插进另一个线程——而端口返回什么 Mapping 都合法，
     这不需要在生产代码里留任何测试钩子。
 
-    `armed` 由端口在返回最后一页（空页）时置位；在那之前的读（分页循环里的汇总行
-    判定）一律放行，否则闸会在 source_total 还没写进去时就触发，测不到那段窗口。
+    只在读**指标字段**时交出控制权：分页循环只读身份字段（汇总行判定、跨页去重），
+    指标要到解析阶段才读。在分页里就交出去，闸会在 source_total 还没写进去时就触发，
+    测不到那段窗口。`armed` 由端口在返回这个店的页时置位。
     """
 
     def __init__(self, data: dict[str, object], armed: list[bool], on_ready: object) -> None:
@@ -1035,14 +1067,17 @@ class _LatchRow(dict):  # type: ignore[type-arg]
         self._fired = False
 
     def get(self, key: object, default: object = None) -> object:  # type: ignore[override]
-        if self._armed[0] and not self._fired:
+        if key in _METRIC_FIELDS and self._armed[0] and not self._fired:
             self._fired = True
             self._on_ready()  # type: ignore[operator]
         return super().get(key, default)  # type: ignore[arg-type]
 
 
+_METRIC_FIELDS = frozenset({"clicks", "orders", "spends", "impressions"})
+
+
 class _ArmingPort(_TwoProfilePort):
-    """返回 `arm_after` 这个店的最后一页（空页）时置位闩锁。"""
+    """返回 `arm_after` 这个店的页时置位闩锁。"""
 
     def __init__(
         self,
@@ -1058,7 +1093,7 @@ class _ArmingPort(_TwoProfilePort):
         result = super().fetch_page(tool_id, params)
         profile_ids = params["profile_ids"]
         assert isinstance(profile_ids, list)
-        if str(profile_ids[0]) == self._arm_after and not result["rows"]:
+        if str(profile_ids[0]) == self._arm_after:
             self._armed[0] = True
         return result
 
@@ -1068,9 +1103,9 @@ def test_a_concurrent_empty_shop_cannot_disarm_another_shops_unusable_gate() -> 
 
     闸挡的是「上游给了行、一行也读不出来」被当成「查了，很干净」。它此前从**实例
     属性**读 source_total，而同一个 source 实例服务全部店铺。本测试把两次取数按
-    真实会发生的顺序交错：B 店取完 3000 行（全不可读）、还没跑到闸门时，A 店
+    真实会发生的顺序交错：B 店取完全部行（全不可读）、还没跑到闸门时，A 店
     （本窗口 0 行）整轮跑完并把 source_total 置成 0；B 恢复后读到的就是那个 0，
-    于是直接放行、返回空元组——而它手里 3000 行一行都没读出来。
+    于是直接放行、返回空元组——而它手里的行一行都没读出来。
 
     交错是确定性的（靠 Event 与闩锁，不靠时序），跑一次就能判定，不是概率性冒烟。
     """
@@ -1088,7 +1123,7 @@ def test_a_concurrent_empty_shop_cannot_disarm_another_shops_unusable_gate() -> 
     ]
     by_profile = {
         "shop-empty": ([], 0),  # 接了、查了、这个窗口确实一行都没有
-        "shop-broken": (unreadable, 3000),  # 上游说有 3000 行，一行也读不出来
+        "shop-broken": (unreadable, len(unreadable)),  # 行都拿到了，一行也读不出来
     }
     port = _ArmingPort(by_profile, armed, arm_after="shop-broken")
     bindings = {
