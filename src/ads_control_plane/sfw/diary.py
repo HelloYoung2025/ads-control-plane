@@ -26,24 +26,26 @@ MAX_ROWS = 50
 WHY = {
     "ACOS_HIGH": "ACOS 高过上限",
     "NO_ORDERS": "花掉一单的钱还没出单",
-    "ACOS_LOW": "ACOS 低于上限，可以多花一点抢量",
+    "FEW_ORDERS": "只出了一两单，花的钱再多出一单也打不平",
+    "ACOS_LOW": "ACOS 低于上限，可以试着加一点（只是提示）",
     "PAUSED": "没在投（它自己、广告组或活动暂停了）",
     "MANAGED": "领星的规则或分时策略在管，不碰",
     "SHARED": "广告组里还有别的商品在投，不碰",
     "INHERITED": "用的是广告组默认价，不碰",
     "NEW": "建了不到 17 天，先攒数据",
     "HANDS_OFF": "有人改过出价，14 天内不碰",
-    "FROZEN": "来回摆了两次，冻结 30 天",
-    "COOLING": "刚判过一次（本来会改），等之后攒的新数据",
+    "COOLING": "刚有变动（判过、改过或刚出现），等之后攒的新数据",
     "NO_IMPRESSIONS": "没有曝光",
     "FEW_CLICKS": "点击不到 10 次",
     "NOT_ENOUGH": "单数还不够，说不准",
     "ON_TARGET": "ACOS 就在上限附近，不用动",
     "NO_TARGET": "还没定 ACOS 上限",
-    "AT_FLOOR": "已经降到起点价的 6 成，停在这",
-    "AT_CEILING": "已经加到起点价的 1.4 倍，停在这",
+    "AT_FLOOR": "已经降到起点价的 6 成（或站点最低价），不再往下降",
+    "AT_CEILING": "已经到起点价的 1.4 倍，不再往上加",
+    "NO_STEP": "出价太小，一步还不到一个最小单位",
     "STOCK_OUT": "没库存，这轮不判",
     "LATER": "一轮最多改 20 处，下一轮再看",
+    "LATER_HINTS": "加价提示一轮最多列 20 处",
 }
 LIGHT_WORD = {"green": "绿灯", "yellow": "黄灯", "red": "红灯", "off": "关灯"}
 ALERT_WORD = {
@@ -51,6 +53,7 @@ ALERT_WORD = {
     "SPEND_JUMPED": "花费比前两周多了三成多",
     "STOCK_OUT": "没库存了",
     "NO_ADS": "没找到在投的 SP 广告",
+    "NOTHING_TO_TUNE": "在投的词它一个都不能碰（共用组、领星在管、用组默认价或刚建）",
     "CVR_DROPPED": "转化率比前两周掉了三成多：多半是价格、评价、库存或 listing 的问题",
 }
 KIND_WORD = {"keyword": "关键词", "target": "投放"}

@@ -2,6 +2,9 @@
 
 最重的一条（对抗评审）：只用上次改动之后的新证据。所以 pick_window 的边界单独钉死——
 差一天，同一份旧证据就会被第二次拿来降价。
+
+第二重的一条（2026-09-24 多智能体评审）：一步最多 −15% / +10%，在任何情况下都成立——
+出价已经在 0.6–1.4 倍的边外（人改的）、出价小到取整会吃掉一大截，都不例外。
 """
 
 from __future__ import annotations
@@ -58,7 +61,6 @@ def subject(**changes: object) -> Subject:
         shared=False,
         last_change=None,
         hands_off_until=None,
-        frozen_until=None,
         long=ev(),
         short=ev(),
     )
@@ -116,7 +118,6 @@ def test_a_change_waits_for_seven_full_days_of_fresh_data() -> None:
         ({"created": None}, Why.NEW),
         ({"created": TODAY - timedelta(days=NEW_OBJECT_DAYS - 1)}, Why.NEW),
         ({"hands_off_until": TODAY + timedelta(days=1)}, Why.HANDS_OFF),
-        ({"frozen_until": TODAY + timedelta(days=1)}, Why.FROZEN),
         ({"last_change": SHORT_START}, Why.COOLING),
     ],
 )
@@ -142,10 +143,9 @@ def test_an_object_old_enough_is_judged() -> None:
     assert decision.verdict is Verdict.DOWN
 
 
-def test_hands_off_and_frozen_end_on_their_day() -> None:
+def test_hands_off_ends_on_its_day() -> None:
     hot = ev(clicks=100, orders=5, spend="100", sales="200")
     assert decide(subject(hands_off_until=TODAY, long=hot), AIM, TODAY).verdict is Verdict.DOWN
-    assert decide(subject(frozen_until=TODAY, long=hot), AIM, TODAY).verdict is Verdict.DOWN
 
 
 # ------------------------------------------------------------------ 证据够不够
@@ -158,10 +158,23 @@ def test_no_impressions_and_few_clicks() -> None:
     )
 
 
-def test_one_or_two_orders_are_noise() -> None:
-    decision = decide(subject(long=ev(clicks=60, orders=2, spend="50", sales="40")), AIM, TODAY)
-    assert decision.verdict is Verdict.HOLD
-    assert decision.why is Why.NOT_ENOUGH
+def test_one_or_two_orders_are_noise_until_even_one_more_would_not_pay() -> None:
+    """1、2 单时 ACOS 说明不了什么；但花费够「再多出一单也还超一单该花的钱」（CPA 上限 5），
+    就是真贵：2 单要花到 15、1 单要花到 10。"""
+    two = ev(clicks=60, orders=2, spend="14.99", sales="40")
+    assert decide(subject(long=two), AIM, TODAY).why is Why.NOT_ENOUGH
+    decision = decide(subject(long=replace(two, spend=Decimal("15.00"))), AIM, TODAY)
+    assert decision.verdict is Verdict.DOWN
+    assert decision.why is Why.FEW_ORDERS
+    assert decision.new_bid == Decimal("0.85")
+    one = ev(clicks=300, orders=1, spend="9.99", sales="20")
+    assert decide(subject(long=one), AIM, TODAY).why is Why.NOT_ENOUGH
+    assert decide(subject(long=replace(one, spend=Decimal("10"))), AIM, TODAY).why is (
+        Why.FEW_ORDERS
+    )
+    # 点击不够 25 次，花再多也不下结论。
+    few = ev(clicks=24, orders=1, spend="999", sales="20")
+    assert decide(subject(long=few), AIM, TODAY).why is Why.NOT_ENOUGH
 
 
 def test_without_a_target_it_only_says_so() -> None:
@@ -184,9 +197,9 @@ def test_acos_high_steps_down_toward_the_target() -> None:
 
 
 def test_a_small_overshoot_moves_less_than_the_max_step() -> None:
-    # ACOS 28% 对 25%：× 25/28 = 0.8928… → 取整到 0.89（向下，保守）。
+    # ACOS 28% 对 25%：× 25/28 = 0.8928… → 取整朝旧价那一侧，到 0.90。
     decision = decide(subject(long=ev(clicks=80, orders=6, spend="56", sales="200")), AIM, TODAY)
-    assert decision.new_bid == Decimal("0.89")
+    assert decision.new_bid == Decimal("0.90")
 
 
 def test_the_dead_band_holds() -> None:
@@ -199,6 +212,14 @@ def test_acos_low_suggests_up_by_at_most_ten_percent() -> None:
     decision = decide(subject(long=ev(clicks=80, orders=6, spend="20", sales="200")), AIM, TODAY)
     assert decision.verdict is Verdict.UP
     assert decision.why is Why.ACOS_LOW
+    assert decision.new_bid == Decimal("1.10")
+
+
+def test_orders_and_sales_with_zero_spend_do_not_divide_by_zero() -> None:
+    """领星偶尔给「有单、有销售额、花费 0」的行：ACOS 为 0，按最大步长提示，不抛异常。"""
+    odd = ev(clicks=20, orders=5, spend="0", sales="100")
+    decision = decide(subject(long=odd), AIM, TODAY)
+    assert decision.verdict is Verdict.UP
     assert decision.new_bid == Decimal("1.10")
 
 
@@ -262,19 +283,64 @@ def test_the_site_minimum_wins_over_the_start_bid_floor() -> None:
     assert decision.new_bid == Decimal("0.020")
 
 
-def test_yen_rounds_down_to_whole_yen() -> None:
-    aim = replace(AIM, min_bid=Decimal("2"), tick=Decimal("1"), cpa_cap=Decimal("500"))
+YEN = replace(AIM, min_bid=Decimal("2"), tick=Decimal("1"), cpa_cap=Decimal("500"))
+
+
+def test_yen_rounds_to_whole_yen_toward_the_old_bid() -> None:
     hot = ev(clicks=80, orders=6, spend="6000", sales="20000")
-    decision = decide(subject(bid=Decimal("47"), start_bid=Decimal("47"), long=hot), aim, TODAY)
-    # 47 × max(25/30, 0.85) = 39.95 → 39。
-    assert decision.new_bid == Decimal("39")
+    decision = decide(subject(bid=Decimal("47"), start_bid=Decimal("47"), long=hot), YEN, TODAY)
+    # 47 × max(25/30, 0.85) = 39.95 → 40：向上取整，一步不超过 15%。
+    assert decision.new_bid == Decimal("40")
 
 
-def test_rounding_that_leaves_the_bid_unchanged_is_a_hold() -> None:
-    """0.02 × 0.85 取整后还是 0.02：不假装改了一分钱。"""
+def test_rounding_never_makes_a_step_bigger_than_the_limit() -> None:
+    """小额出价：向下取整会让一步变成 −20% 以上（$0.07 → $0.05、¥9 → ¥7）。"""
+    hot = ev(clicks=80, orders=6, spend="100", sales="200")
+    for bid, aim, new in ((Decimal("0.07"), AIM, "0.06"), (Decimal("9"), YEN, "8")):
+        decision = decide(subject(bid=bid, start_bid=bid, long=hot), aim, TODAY)
+        assert decision.verdict is Verdict.DOWN
+        assert decision.new_bid == Decimal(new)
+        assert decision.new_bid >= bid * Decimal("0.85")
+
+
+def test_a_step_smaller_than_one_tick_is_a_hold_not_an_edge() -> None:
+    """一步还不到一个最小单位：不假装改了，也不谎称到了 0.6 / 1.4 倍的边。"""
+    hot = ev(clicks=80, orders=6, spend="100", sales="200")
+    down = decide(subject(bid=Decimal("0.05"), start_bid=Decimal("0.05"), long=hot), AIM, TODAY)
+    assert down.verdict is Verdict.HOLD
+    assert down.why is Why.NO_STEP
+    cheap = ev(clicks=80, orders=6, spend="2000", sales="20000")
+    up = decide(subject(bid=Decimal("9"), start_bid=Decimal("9"), long=cheap), YEN, TODAY)
+    assert up.why is Why.NO_STEP
+
+
+def test_at_the_site_minimum_it_is_at_the_floor() -> None:
     hot = ev(clicks=80, orders=6, spend="100", sales="200")
     decision = decide(subject(bid=Decimal("0.02"), start_bid=Decimal("0.02"), long=hot), AIM, TODAY)
     assert decision.why is Why.AT_FLOOR
+
+
+@pytest.mark.parametrize(
+    ("bid", "acos_spend", "verdict", "why", "new"),
+    [
+        # 人把价改到 3.00（b0 = 1.00）：ACOS 28% 对 25% → × 0.8928… → 2.68，不一步跳回 1.40。
+        ("3.00", "56", Verdict.DOWN, Why.ACOS_HIGH, "2.68"),
+        # 已经在 1.4 倍上面：加价提示不给，也不会「加价」加成降价。
+        ("3.00", "20", Verdict.HOLD, Why.AT_CEILING, None),
+        # 人把价改到 0.30：ACOS 10% → 只加一成到 0.33，不一步跳到 0.60。
+        ("0.30", "20", Verdict.UP, Why.ACOS_LOW, "0.33"),
+        # 已经在 0.6 倍下面：不再往下降。
+        ("0.30", "100", Verdict.HOLD, Why.AT_FLOOR, None),
+    ],
+)
+def test_a_bid_outside_the_band_moves_back_one_step_at_a_time(
+    bid: str, acos_spend: str, verdict: Verdict, why: Why, new: str | None
+) -> None:
+    evidence = ev(clicks=80, orders=6, spend=acos_spend, sales="200")
+    decision = decide(subject(bid=Decimal(bid), long=evidence), AIM, TODAY)
+    assert decision.verdict is verdict
+    assert decision.why is why
+    assert decision.new_bid == (Decimal(new) if new is not None else None)
 
 
 def test_an_old_start_bid_keeps_its_bounds_after_many_steps() -> None:

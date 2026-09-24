@@ -153,7 +153,8 @@ def _int(field: str, value: object) -> int:
             number = Decimal(value.strip())
         except InvalidOperation as exc:
             raise _Unreadable(f"{field}: {value!r}") from exc
-        if number == number.to_integral_value():
+        # 先挡 Infinity / NaN / sNaN：sNaN 一比较就抛 InvalidOperation，不是 _Unreadable。
+        if number.is_finite() and number == number.to_integral_value():
             return int(number)
     raise _Unreadable(f"{field}: {value!r}")
 

@@ -1,7 +1,8 @@
 """出价规则 v1：一个关键词或投放，这一轮该不该动出价、动多少。纯函数，不碰网络、不碰记忆。
 
 阶段裁决（2026-09-24 多智能体设计定稿，计划第四节）：S1 只把结论记成「本来会改」，
-一分钱不动；S2 才执行，而且只执行降价。所以本模块给出的「加价」永远只是建议。
+一分钱不动；S2 才执行，而且只执行降价。所以本模块给出的「加价」永远只是建议，
+调用方（sfw/judge.py）也不把它算作一次改动。
 
 最重的一条来自对抗评审：**只用上次改动之后的新证据**。「冷却 7 天 + 固定回看 14 天」
 会让同一份旧证据被连用几次，出价一路复利往下压。这里用两个固定窗口实现它：
@@ -13,7 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, timedelta
-from decimal import ROUND_DOWN, Decimal
+from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 from enum import StrEnum
 
 from ads_control_plane.strategies.ports import ATTRIBUTION_LAG_DAYS
@@ -26,14 +27,16 @@ SHORT_DAYS = 7
 MIN_CLICKS = 10
 #: 按 ACOS 调价至少要这么多单：1、2 单时 ACOS 是噪声。
 MIN_ORDERS = 3
-#: 0 单也降价：点击要够多，花费还要超过「一单该花的钱」。
+#: 单不够（0–2 单）也降价：点击要够多，花费还要够「再多出一单也打不平」。
 NO_ORDER_CLICKS = 25
 #: 死区 ±10%：ACOS 离上限这么近就不动，免得在上限附近来回摆。
 DEAD_BAND = Decimal("0.10")
 #: 一次最多降 15%、最多加 10%（旧 docs/ad-control-plan.md §3.2 与业内常见做法）。
+#: 取整也朝旧价那一侧取，所以任何币种、多小的出价，一步都不会超过这两个数。
 MAX_STEP_DOWN = Decimal("0.85")
 MAX_STEP_UP = Decimal("1.10")
-#: 出价永远夹在第一次看到它时的 0.6 到 1.4 倍之间：到边就停，报给大人。
+#: 出价夹在第一次看到它时的 0.6 到 1.4 倍之间：到边就停，报给大人。这条边只挡「往外走」：
+#: 已经在边外的价（人改的），也只按上面的步长一步步往回收，不一步跳回边上。
 FLOOR_OF_START = Decimal("0.6")
 CEILING_OF_START = Decimal("1.4")
 #: 首次出现不满这么多天的对象不判：长窗 + 归因滞后都要覆盖到它出生之后。
@@ -76,7 +79,6 @@ class Subject:
     shared: bool  # 所在广告组里还有别的 ASIN 在投
     last_change: date | None  # 上次改动（含只看不动期的「本来会改」）
     hands_off_until: date | None  # 有人改过，这天之前不碰
-    frozen_until: date | None  # 来回摆，这天之前不碰
     long: Evidence  # 长窗
     short: Evidence  # 短窗
 
@@ -107,7 +109,6 @@ class Why(StrEnum):
     INHERITED = "INHERITED"
     NEW = "NEW"
     HANDS_OFF = "HANDS_OFF"
-    FROZEN = "FROZEN"
     COOLING = "COOLING"
     NO_IMPRESSIONS = "NO_IMPRESSIONS"
     FEW_CLICKS = "FEW_CLICKS"
@@ -116,9 +117,11 @@ class Why(StrEnum):
     NO_TARGET = "NO_TARGET"
     ACOS_HIGH = "ACOS_HIGH"
     NO_ORDERS = "NO_ORDERS"
+    FEW_ORDERS = "FEW_ORDERS"
     ACOS_LOW = "ACOS_LOW"
     AT_FLOOR = "AT_FLOOR"
     AT_CEILING = "AT_CEILING"
+    NO_STEP = "NO_STEP"
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -152,16 +155,6 @@ def pick_window(last_change: date | None, today: date) -> int | None:
     return None
 
 
-def _clamp(new: Decimal, subject: Subject, aim: Aim) -> Decimal:
-    start = subject.start_bid if subject.start_bid is not None else subject.bid
-    assert start is not None and subject.bid is not None
-    low = max(start * FLOOR_OF_START, aim.min_bid)
-    high = start * CEILING_OF_START
-    bounded = min(max(new, low), high)
-    # 向下取到币种最小单位：降价时多降一分，加价时少加一分，都是保守的那一侧。
-    return (bounded / aim.tick).to_integral_value(rounding=ROUND_DOWN) * aim.tick
-
-
 def decide(subject: Subject, aim: Aim, today: date) -> Decision:
     """一个对象这一轮的结论。判定顺序即优先级：先问能不能碰，再问证据够不够，最后才算数。"""
     if not subject.enabled:
@@ -177,8 +170,6 @@ def decide(subject: Subject, aim: Aim, today: date) -> Decision:
         return _hold(Why.NEW, subject)
     if subject.hands_off_until is not None and today < subject.hands_off_until:
         return _hold(Why.HANDS_OFF, subject)
-    if subject.frozen_until is not None and today < subject.frozen_until:
-        return _hold(Why.FROZEN, subject)
     days = pick_window(subject.last_change, today)
     if days is None:
         return _hold(Why.COOLING, subject)
@@ -202,20 +193,17 @@ def decide(subject: Subject, aim: Aim, today: date) -> Decision:
                 ev,
             )
         if acos < target * (1 - DEAD_BAND):
-            return _move(
-                Verdict.UP,
-                Why.ACOS_LOW,
-                bid * min(target / acos, MAX_STEP_UP),
-                subject,
-                aim,
-                days,
-                ev,
-            )
+            # 有单、有销售额、花费却是 0（领星偶尔给这种行）：ACOS 为 0，按最大步长算，不除以 0。
+            step = min(target / acos, MAX_STEP_UP) if acos > 0 else MAX_STEP_UP
+            return _move(Verdict.UP, Why.ACOS_LOW, bid * step, subject, aim, days, ev)
         return _hold(Why.ON_TARGET, subject, days=days, ev=ev)
-    if ev.orders == 0 and ev.clicks >= NO_ORDER_CLICKS:
+    if ev.orders < MIN_ORDERS and ev.clicks >= NO_ORDER_CLICKS:
+        # 单太少，ACOS 说明不了什么；但花费已经够「再多出一单，每单花的钱也还超上限」，
+        # 就是真贵。0 单时即花费超过一单该花的钱。
         cap = aim.cpa_cap if aim.cpa_cap is not None else aim.spend_floor
-        if cap is not None and ev.spend >= cap:
-            return _move(Verdict.DOWN, Why.NO_ORDERS, bid * MAX_STEP_DOWN, subject, aim, days, ev)
+        if cap is not None and ev.spend >= cap * (ev.orders + 1):
+            why = Why.NO_ORDERS if ev.orders == 0 else Why.FEW_ORDERS
+            return _move(Verdict.DOWN, why, bid * MAX_STEP_DOWN, subject, aim, days, ev)
     if target is None and ev.orders >= MIN_ORDERS:
         return _hold(Why.NO_TARGET, subject, days=days, ev=ev)
     return _hold(Why.NOT_ENOUGH, subject, days=days, ev=ev)
@@ -230,13 +218,27 @@ def _move(
     days: int,
     ev: Evidence,
 ) -> Decision:
-    new = _clamp(raw, subject, aim)
     old = subject.bid
-    assert old is not None
+    start = subject.start_bid if subject.start_bid is not None else old
+    assert old is not None and start is not None
+    if verdict is Verdict.DOWN:
+        floor = max(start * FLOOR_OF_START, aim.min_bid)
+        if old <= floor:
+            return _hold(Why.AT_FLOOR, subject, days=days, ev=ev)
+        new = _to_tick(max(raw, floor), aim.tick, ROUND_CEILING)
+    else:
+        ceiling = start * CEILING_OF_START
+        if old >= ceiling:
+            return _hold(Why.AT_CEILING, subject, days=days, ev=ev)
+        new = _to_tick(min(raw, ceiling), aim.tick, ROUND_FLOOR)
     if (verdict is Verdict.DOWN and new >= old) or (verdict is Verdict.UP and new <= old):
-        # 夹紧或取整之后动不了：到边了。不假装改了一分钱。
-        edge = Why.AT_FLOOR if verdict is Verdict.DOWN else Why.AT_CEILING
-        return _hold(edge, subject, days=days, ev=ev)
+        # 出价太小，一步还不到一个最小单位（如 ¥9 加一成）。不假装改了一分钱。
+        return _hold(Why.NO_STEP, subject, days=days, ev=ev)
     return Decision(
         verdict=verdict, why=why, old_bid=old, new_bid=new, window_days=days, evidence=ev
     )
+
+
+def _to_tick(value: Decimal, tick: Decimal, rounding: str) -> Decimal:
+    """取到币种最小单位，朝旧价那一侧取（降价向上、加价向下）：一步永远不超过步长上限。"""
+    return (value / tick).to_integral_value(rounding=rounding) * tick

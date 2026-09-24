@@ -34,7 +34,13 @@ from ads_control_plane.sfw.server import (
     TOOL_NAME,
     build_server,
 )
-from tests.support.fake_lingxing import READ_TOOLS, FakeLingxing, Thing, small_shop
+from tests.support.fake_lingxing import (
+    READ_TOOLS,
+    FakeLingxing,
+    Thing,
+    TransportDown,
+    small_shop,
+)
 from tests.unit import test_sfw_pack as pack
 
 #: 12:00 UTC：绝大多数时区里本地日期和 UTC 日期是同一天，报告文件名好算。
@@ -271,7 +277,7 @@ def test_stop_means_it_does_not_even_look(rig: Rig) -> None:
     assert rig.say("现在看一遍").startswith("**【关灯】全部停下了，没去看**")
     assert rig.fake.calls == []
     assert rig.say("看今天").startswith("**【关灯】全部停下了，在休息**")
-    assert rig.say("继续干活").startswith("**【绿灯】继续干活**\n\n说「看今天」看看情况")
+    assert rig.say("继续干活").startswith("**【绿灯】继续干活**\n\n说「现在看一遍」看看情况")
     rig.say("猫抓板现在看一遍")
     assert rig.fake.calls
 
@@ -353,9 +359,9 @@ def test_today_shows_every_product_in_one_table(rig: Rig) -> None:
     rig.say(ADOPT)
     rig.say("管 美国店 B0OTHER001 叫 小猫")
     answer = rig.say("现在看一遍")
-    assert answer.startswith("**【黄灯】看完 2 个商品，本来会改 2 处**")
-    assert "| 猫抓板 | 绿灯 | 本来会改 2 处 |" in answer
-    assert "| 小猫 | 黄灯 | 还没定 ACOS 上限 |" in answer
+    # 第二行是最要紧的那个商品的下一步；表里黄灯排在绿灯前面。
+    assert answer.startswith("**【黄灯】看了 2 个商品，本来会改 2 处**\n\n说「小猫最多25%」定一个")
+    assert "| 小猫 | 黄灯 | 还没定 ACOS 上限 |\n| 猫抓板 | 绿灯 | 本来会改 2 处 |" in answer
     answer = rig.say("看今天")
     assert answer.startswith("**【黄灯】2 个商品：1 绿、1 黄**\n\n点下面的报告看细节")
     assert "| 猫抓板 | 绿灯 | 30% | 27% | 2 处 |" in answer
@@ -395,7 +401,7 @@ def test_no_stock_is_a_yellow_light_and_nothing_is_judged(rig: Rig) -> None:
         ad.stock = 0
     rig.say(ADOPT)
     answer = rig.say("猫抓板现在看一遍")
-    assert answer.startswith("**【黄灯】猫抓板：没库存了，这轮不判**\n\n补上货再让它看")
+    assert answer.startswith("**【黄灯】猫抓板：没库存了，这轮不判**\n\n叫大人补货，补上再让它看")
     run = rig.last_run()
     assert run.facts["proposals"] == []
     assert run.facts["holds"] == {"STOCK_OUT": 4}
@@ -425,8 +431,31 @@ def test_no_ads_in_flight_is_a_yellow_light(rig: Rig) -> None:
         ad.state = "paused"
     rig.say(ADOPT)
     assert rig.say("猫抓板现在看一遍").startswith(
-        "**【黄灯】猫抓板：没找到在投的 SP 广告**\n\n大人看看这个商品还在投广告吗"
+        "**【黄灯】猫抓板：没找到在投的广告**\n\n大人看看这个商品还在投广告吗"
     )
+
+
+def test_ads_switched_off_are_the_headline_not_the_orders_they_cost(rig: Rig) -> None:
+    """广告全停了，订单自然少一半：头条说原因（没在投），不说后果（订单腰斩），也不亮红灯。"""
+    w = windows_for(TODAY)
+    rig.fake.set(w.before.report_date, "ad-1", clicks=200, orders=20, spend="50", sales="400")
+    rig.fake.set(w.long.report_date, "ad-1", clicks=20, orders=2, spend="5", sales="40")
+    for ad in rig.fake.ads[:3]:
+        ad.state = "paused"
+    rig.say(ADOPT)
+    assert rig.say("猫抓板现在看一遍").startswith("**【黄灯】猫抓板：没找到在投的广告**")
+    assert rig.last_run().facts["alerts"] == ["NO_ADS"]
+
+
+def test_when_nothing_can_be_tuned_it_is_not_a_green_light(rig: Rig) -> None:
+    """词全在共用组、领星在管、用组默认价：它一处也调不了，不能天天报「都没事」。"""
+    hot(rig.fake)
+    for thing in rig.fake.things:
+        thing.flags = {**thing.flags, "is_apply_time": True}
+    rig.say(ADOPT)
+    rig.say("猫抓板最多25%")
+    answer = rig.say("猫抓板现在看一遍")
+    assert answer.startswith("**【黄灯】猫抓板：能调的词是 0 个**\n\n大人看报告里「它没碰的」")
 
 
 # ------------------------------------------------------------------ 出错
@@ -453,18 +482,61 @@ def test_three_failed_looks_in_a_row_pause_the_product(rig: Rig) -> None:
     rig.fake.failures["ad_campaign_product_report"] = [Refused("no") for _ in range(3)]
     for _ in range(2):
         answer = rig.say("猫抓板现在看一遍")
-        assert answer.startswith("**【黄灯】猫抓板：这次没看成**\n\n过几分钟再说一遍")
-        assert "给大人看：没看成的原因：LX_BUSINESS_ERROR" in answer
+        # 领星拒绝（权限、参数）不是等一会儿就好的事：叫大人，不叫孩子反复重试。
+        assert answer.startswith("**【黄灯】猫抓板：这次没看成**\n\n叫大人看最后一行")
+        assert "给大人看：没看成：领星说参数或权限不对（LX_BUSINESS_ERROR）" in answer
     answer = rig.say("猫抓板现在看一遍")
-    assert answer.startswith("**【红灯】猫抓板：连着 3 次没看成，停下了**\n\n大人看最后一行")
-    assert "| 猫抓板 | 红灯 | — | — | 停下了 |" in rig.say("看今天")
-    assert rig.say("现在看一遍").startswith("**【黄灯】还没有要看的商品**")
-    # 叫着名字看，看成了就接着管。
-    assert rig.say("猫抓板现在看一遍").startswith("**【黄灯】猫抓板：还没定 ACOS 上限**")
+    assert answer.startswith(
+        "**【红灯】猫抓板：连着 3 次没看成，歇着了**\n\n大人修好后说「猫抓板现在看一遍」"
+    )
+    assert "| 猫抓板 | 红灯 | — | — | 歇着了 |" in rig.say("看今天")
+    # 「继续干活」连歇着的商品一起叫醒，并且说出来。
+    assert rig.say("继续干活").startswith("**【绿灯】继续干活，猫抓板也接着看**")
     memory = rig.memory()
     goal = memory.goal_named("猫抓板")
     assert goal is not None and goal.status == "active" and goal.failures == 0
     memory.close()
+
+
+def test_a_look_without_a_name_also_tries_products_that_stopped_after_failing(rig: Rig) -> None:
+    """人说「现在看一遍」本身就是「修好了，再试试」：歇着的也看，不回「还没有要看的商品」。"""
+    rig.say(ADOPT)
+    rig.fake.failures["ad_campaign_product_report"] = [Refused("no") for _ in range(3)]
+    for _ in range(3):
+        rig.say("现在看一遍")
+    answer = rig.say("现在看一遍")
+    assert answer.startswith("**【黄灯】猫抓板：还没定 ACOS 上限**")
+    memory = rig.memory()
+    goal = memory.goal_named("猫抓板")
+    assert goal is not None and goal.status == "active"
+    memory.close()
+
+
+def test_network_trouble_says_try_again_later_with_the_exact_words(rig: Rig) -> None:
+    rig.say(ADOPT)
+    rig.fake.failures["ad_campaign_product_report"] = [TransportDown("down") for _ in range(3)]
+    answer = rig.say("猫抓板现在看一遍")
+    assert answer.startswith("**【黄灯】猫抓板：这次没看成**\n\n过几分钟再说「猫抓板现在看一遍」")
+    assert "连不上领星（网络）（LX_TRANSPORT_ERROR）" in answer
+
+
+def test_several_products_that_all_failed_are_not_called_looked_at(rig: Rig) -> None:
+    rig.say(ADOPT)
+    rig.say("管 美国店 B0OTHER001 叫 小猫")
+    rig.fake.failures["ad_campaign_product_report"] = [TransportDown("down") for _ in range(9)]
+    answer = rig.say("现在看一遍")
+    assert answer.startswith("**【黄灯】2 个商品这次都没看成**\n\n过几分钟再说「现在看一遍」")
+
+
+def test_a_product_whose_store_left_the_config_is_not_read(rig: Rig) -> None:
+    """店铺表只来自配置（AX-02）：交出来以后大人把美国店删了，就不再去读它。"""
+    rig.say(ADOPT)
+    rig.setup.config_path.unlink()
+    pack.private(rig.tmp, pack.config_text(rig.tmp, [pack.JP]))
+    answer = rig.say("猫抓板现在看一遍")
+    assert answer.startswith("**【黄灯】猫抓板：这次没看成**\n\n叫大人看最后一行")
+    assert "这个商品的店已经不在配置里了（GOAL_STORE_GONE）" in answer
+    assert rig.fake.calls == []
 
 
 def test_a_look_already_running_in_another_conversation_says_busy(rig: Rig) -> None:
@@ -591,7 +663,7 @@ def test_thirty_days_of_looking_once_a_day(rig: Rig) -> None:
         answers.append(rig.say("猫抓板现在看一遍"))
         rig.clock.tomorrow()
 
-    assert all(a.startswith("**【绿灯】猫抓板：") for a in answers)
+    assert all(a.startswith("**【绿灯】猫抓板：") for a in answers), answers
     assert len(list(rig.setup.report_dir.glob("*.html"))) == 30
     assert len(rig.fake.calls) == 30 * 8
 
@@ -607,11 +679,12 @@ def test_thirty_days_of_looking_once_a_day(rig: Rig) -> None:
         )
     ]
     conn.close()
-    # kw-1：第 0 天贵 → 降；第 10 天攒满 7 天改动之后的新数据，便宜 → 加；第 20 天又贵，
-    # 30 天里第二次掉头 → 冻结，不再建议。tg-1 一直在上限上，从来不动。
+    # kw-1：第 0 天贵 → 降（记一笔，冷却）；第 10 天起攒满 7 天改动之后的新数据，便宜 →
+    # 只提示可以加，不算改动、不进账；窗口滑进又贵的日子，第 22 天（10-16）长窗 ACOS 29% → 再降。
+    # tg-1 一直在上限上，从来不动。
     assert made == [
         ("kw-1", date(2026, 9, 24), "down", 14, "1.00", "0.85"),
-        ("kw-1", date(2026, 10, 4), "up", 7, "1.00", "1.10"),
+        ("kw-1", date(2026, 10, 16), "down", 14, "1.00", "0.86"),
     ]
     # 只用新证据：后一次的窗口起点，晚于前一次「本来会改」的那天。
     for before, after in zip(made, made[1:], strict=False):
@@ -623,16 +696,24 @@ def test_thirty_days_of_looking_once_a_day(rig: Rig) -> None:
     assert goal is not None
     remembered = memory.objects(goal.id)
     kw1 = remembered[("keyword", "kw-1")]
-    assert kw1.flips == (date(2026, 10, 4), date(2026, 10, 14))
-    assert kw1.frozen_until == date(2026, 11, 13)
     assert kw1.start_bid == kw1.last_bid == Decimal("1.00"), "只看不动：真实出价一分没变"
-    assert remembered[("keyword", "kw-7")].first_seen == date(2026, 9, 29)
+    assert kw1.last_change == date(2026, 10, 16)
+    assert kw1.proposed_bid == Decimal("0.86"), "大人还没照做，建议挂着"
+    kw7 = remembered[("keyword", "kw-7")]
+    # 交出来以后才冒出来的词：从出现那天起重新攒数，不用它出现之前的数。
+    assert kw7.first_seen == kw7.last_change == date(2026, 9, 29)
     assert remembered[("keyword", "kw-2")].gone_at == date(2026, 10, 9)
     runs = memory.recent_runs(goal.id, 30)[::-1]
     # 新词先攒 17 天数据（长窗 14 + 归因 3）；满了才判，这里它没曝光。
     assert runs[5].facts["holds"]["NEW"] == 1
+    # 便宜的那几天：加价只是提示，列在 hints 里。
+    hints = runs[10].facts["hints"]
+    assert isinstance(hints, list)
+    assert [(h["label"], h["old"], h["new"], h["days"]) for h in hints] == [
+        ("cat scratcher [exact]", "1.00", "1.10", 7)
+    ]
     assert runs[29].facts["holds"] == {
-        "FROZEN": 1,
+        "COOLING": 1,
         "NO_IMPRESSIONS": 1,
         "ON_TARGET": 1,
         "SHARED": 1,

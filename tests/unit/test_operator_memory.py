@@ -1,12 +1,14 @@
 """操盘手的记忆库（sfw/memory.py）：只有自己能读、两本账只追加、同一商品同时只有一轮、
-进程死掉留下的半截运行会被认出来、库比代码新就不打开。
+进程死掉留下的半截运行会被认出来、库比代码新就不打开（也不改它一个字节）、
+人刚说的话不会被一轮看了几十秒的旧快照盖掉。
 """
 
 from __future__ import annotations
 
+import hashlib
+import multiprocessing
 import sqlite3
 import stat
-import threading
 from collections.abc import Iterator
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
@@ -16,7 +18,6 @@ import pytest
 
 from ads_control_plane.sfw.memory import (
     SCHEMA_VERSION,
-    STALE_RUN,
     DecisionRow,
     Memory,
     MemoryStoreError,
@@ -55,10 +56,10 @@ def item(object_id: str = "kw-1", **changes: object) -> Remembered:
         "last_seen": date(2026, 9, 24),
         "gone_at": None,
         "last_change": date(2026, 9, 20),
-        "last_direction": -1,
-        "flips": (date(2026, 9, 10),),
-        "frozen_until": None,
         "hands_off_until": date(2026, 10, 8),
+        "shared": False,
+        "managed": False,
+        "proposed_bid": Decimal("0.72"),
     }
     return Remembered(**{**base, **changes})  # type: ignore[arg-type]
 
@@ -81,15 +82,19 @@ def test_a_file_others_could_read_is_tightened(tmp_path: Path) -> None:
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
 
-def test_a_newer_memory_is_not_opened(tmp_path: Path) -> None:
+def test_a_newer_memory_is_not_opened_and_not_touched(tmp_path: Path) -> None:
     path = tmp_path / "operator.sqlite3"
     conn = sqlite3.connect(path)
+    conn.execute("CREATE TABLE later (x)")
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION + 1}")
     conn.close()
+    before = hashlib.sha256(path.read_bytes()).hexdigest()
     with pytest.raises(MemoryStoreError) as caught:
         Memory.open(path)
     assert caught.value.code == "MEMORY_TOO_NEW"
     assert "升回新版本" in str(caught.value)
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == before
+    assert not (tmp_path / "operator.sqlite3-wal").exists()
 
 
 def test_opening_again_keeps_everything(tmp_path: Path) -> None:
@@ -104,28 +109,32 @@ def test_opening_again_keeps_everything(tmp_path: Path) -> None:
     again.close()
 
 
-def test_two_processes_opening_a_new_memory_at_once_both_succeed(tmp_path: Path) -> None:
-    path = tmp_path / "operator.sqlite3"
-    start = threading.Barrier(4)
-    errors: list[BaseException] = []
+def _open_after(start: float, path: str) -> str:
+    import time as clock
 
-    def open_it() -> None:
-        try:
-            start.wait()
-            Memory.open(path).close()
-        except BaseException as exc:  # pragma: no cover - 只在失败时走到
-            errors.append(exc)
+    clock.sleep(max(0.0, start - clock.time()))
+    try:
+        Memory.open(Path(path)).close()
+    except BaseException as exc:  # pragma: no cover - 只在失败时走到
+        return f"{type(exc).__name__}: {exc}"
+    return "ok"
 
-    threads = [threading.Thread(target=open_it) for _ in range(4)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join()
-    assert errors == []
-    check = sqlite3.connect(path)
-    assert check.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
-    assert check.execute("SELECT COUNT(*) FROM control").fetchone()[0] == 1
-    check.close()
+
+def test_several_processes_opening_a_new_memory_at_once_all_succeed(tmp_path: Path) -> None:
+    """两个 SFW 对话各拉一个插件进程，第一次同时打开：切 WAL 那一下不走 busy timeout，
+    2026-09-24 评审用真进程测到一半以上失败。这里用真进程、同一时刻起跑，跑几遍。"""
+    context = multiprocessing.get_context("spawn")
+    with context.Pool(4) as pool:
+        for attempt in range(5):
+            path = tmp_path / f"operator-{attempt}.sqlite3"
+            start = datetime.now(UTC).timestamp() + 1.0
+            results = pool.starmap(_open_after, [(start, str(path))] * 4)
+            assert results == ["ok"] * 4
+            check = sqlite3.connect(path)
+            assert check.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+            assert check.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+            assert check.execute("SELECT COUNT(*) FROM control").fetchone()[0] == 1
+            check.close()
 
 
 # ------------------------------------------------------------------ 只追加
@@ -246,34 +255,27 @@ def test_events_come_newest_first_and_limited(memory: Memory) -> None:
 # ------------------------------------------------------------------ 每一轮
 
 
-def test_one_run_at_a_time_per_product(memory: Memory) -> None:
+def test_at_most_one_running_row_per_product(memory: Memory) -> None:
+    goal_id = adopt(memory)
+    memory.start_run(goal_id, "manual", NOW)
+    with pytest.raises(sqlite3.IntegrityError):
+        memory._conn.execute(
+            "INSERT INTO runs (goal_id, trigger, started_at, status) VALUES (?, 'tick', 'x', "
+            "'RUNNING')",
+            (goal_id,),
+        )
+
+
+def test_a_run_left_behind_by_a_dead_process_is_abandoned_at_once(memory: Memory) -> None:
+    """拿着运行锁开新一轮时，还挂着的 RUNNING 就是死掉的进程留下的：不用等一小时。"""
     goal_id = adopt(memory)
     other = adopt(memory, asin="B0TEST0002", name="小猫")
-    first = memory.start_run(goal_id, "manual", NOW)
-    assert first is not None
-    assert memory.start_run(goal_id, "tick", NOW + timedelta(minutes=1)) is None
-    assert memory.start_run(other, "manual", NOW) is not None, "别的商品不受影响"
-    memory.finish_run(
-        first,
-        goal_id=goal_id,
-        ok=True,
-        light="green",
-        headline="h",
-        facts={},
-        error_code=None,
-        at=NOW,
-    )
-    assert memory.start_run(goal_id, "manual", NOW + timedelta(minutes=2)) is not None
-
-
-def test_a_run_left_behind_by_a_dead_process_is_marked_abandoned(memory: Memory) -> None:
-    goal_id = adopt(memory)
     dead = memory.start_run(goal_id, "manual", NOW)
-    assert memory.start_run(goal_id, "manual", NOW + STALE_RUN - timedelta(minutes=1)) is None
-    fresh = memory.start_run(goal_id, "manual", NOW + STALE_RUN + timedelta(minutes=1))
-    assert fresh is not None and fresh != dead
-    status = memory._conn.execute("SELECT status FROM runs WHERE id = ?", (dead,)).fetchone()[0]
-    assert status == "ABANDONED"
+    elsewhere = memory.start_run(other, "manual", NOW)
+    fresh = memory.start_run(goal_id, "manual", NOW + timedelta(minutes=1))
+    assert fresh != dead
+    status = dict(memory._conn.execute("SELECT id, status FROM runs").fetchall())
+    assert status == {dead: "ABANDONED", elsewhere: "RUNNING", fresh: "RUNNING"}
 
 
 def test_failures_count_up_and_reset_on_success(memory: Memory) -> None:
@@ -324,7 +326,7 @@ def test_objects_and_decisions_round_trip(memory: Memory) -> None:
     assert run_id is not None
     remembered = [
         item(),
-        item("kw-2", start_bid=None, last_bid=None, flips=(), last_direction=None),
+        item("kw-2", start_bid=None, last_bid=None, shared=True, managed=True, proposed_bid=None),
     ]
     decision = DecisionRow(
         kind="keyword",
@@ -364,6 +366,51 @@ def test_stop_and_resume(memory: Memory) -> None:
     assert memory.paused()
     memory.set_paused(False)
     assert not memory.paused()
+
+
+def test_resume_also_wakes_products_that_stopped_after_failing(memory: Memory) -> None:
+    tired = adopt(memory)
+    adopt(memory, asin="B0TEST0002", name="小猫")
+    gone = adopt(memory, asin="B0TEST0003", name="旧货")
+    memory.set_status(tired, "paused", "连着 3 轮没看成，先歇着", NOW)
+    memory.set_status(gone, "retired", "不管了", NOW)
+    memory.set_paused(True)
+    assert memory.resume(NOW) == ["猫抓板"]
+    assert not memory.paused()
+    assert {g.name: g.status for g in memory.goals()} == {"猫抓板": "active", "小猫": "active"}
+    assert memory.events(tired, 1)[0].detail == "说了继续干活，接着看"
+
+
+# ------------------------------------------------------------------ 看的途中人说了话
+
+
+def test_a_default_target_does_not_overwrite_one_a_person_just_set(memory: Memory) -> None:
+    goal_id = adopt(memory)
+    memory.set_target(goal_id, 25, "ACOS 上限改成 25%", NOW)
+    assert not memory.set_target(goal_id, 27, "按近 14 天定了", NOW, only_if_unset=True)
+    goal = memory.goal(goal_id)
+    assert goal is not None and goal.target_acos == Decimal("0.25")
+    assert [e.detail for e in memory.events(goal_id)][0] == "ACOS 上限改成 25%"
+
+
+def test_a_status_change_based_on_an_old_snapshot_does_not_undo_a_drop(memory: Memory) -> None:
+    goal_id = adopt(memory)
+    memory.set_status(goal_id, "retired", "不管了", NOW)
+    assert not memory.set_status(goal_id, "active", "看成了，接着看", NOW, only_from="paused")
+    assert not memory.set_status(goal_id, "paused", "连着 3 轮", NOW, only_from="active")
+    goal = memory.goal(goal_id)
+    assert goal is not None and goal.status == "retired"
+
+
+def test_adopting_a_product_already_handed_over_keeps_its_name(memory: Memory) -> None:
+    """两个对话同时交同一个商品：先到的那个人被告知的小名不能被悄悄换掉。"""
+    goal_id = adopt(memory)
+    again = memory.adopt(
+        store="美国店", profile_id=PROFILE, asin="B0TEST0001", name="小猫", currency="USD", at=NOW
+    )
+    assert again.id == goal_id
+    assert again.name == "猫抓板"
+    assert [e.what for e in memory.events(goal_id)] == ["adopted"]
 
 
 def test_a_pending_answer_expires(memory: Memory) -> None:
