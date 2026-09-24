@@ -27,7 +27,13 @@ from ads_control_plane.sfw.config import (
     USER_EXPORT_DIR,
     parse_config,
 )
-from ads_control_plane.sfw.server import DISCIPLINE, TOOL_NAME, build_server
+from ads_control_plane.sfw.server import (
+    DISCIPLINE,
+    OPERATOR_RULES,
+    OPERATOR_TOOL,
+    TOOL_NAME,
+    build_server,
+)
 from ads_control_plane.sfw.service import run_all, summarize
 from tests.unit import test_sfw_pack as pack
 
@@ -225,6 +231,18 @@ def test_skill_frontmatter_says_when_to_use_it() -> None:
     assert re.search(r"^name:\s*wasted-search-terms$", head, re.M)
     assert re.search(r"^description:\s*\S", head, re.M)
     assert "否定词" in head and "find_wasted_search_terms" in head
+
+
+def test_the_operator_skill_routes_to_its_tool_and_keeps_its_rules() -> None:
+    """操盘手的技能（2026-09-24）：说清什么时候用、调哪个工具；转述的三条和工具说明同义。"""
+    text = (PLUGIN_DIR / "skills" / "ad-operator" / "SKILL.md").read_text(encoding="utf-8")
+    head = text.split("---")[1]
+    assert re.search(r"^name:\s*ad-operator$", head, re.M)
+    assert OPERATOR_TOOL in head and "原话" in head
+    # 找否定词那句归另一个技能：两边都抢，模型会把 /fd 那句话交给操盘手，只得到「没听懂」。
+    assert "wasted-search-terms" in head
+    for rule in ("一字不改", "原样", "永远不说它改了"):
+        assert rule in text and rule in OPERATOR_RULES, rule
 
 
 def test_the_readme_installs_the_same_version_from_the_same_marketplace() -> None:

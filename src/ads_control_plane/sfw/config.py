@@ -49,6 +49,9 @@ USER_ROOT = Path.home() / ".amazon-ads"
 USER_CONFIG_PATH = USER_ROOT / "config.toml"
 USER_EXPORT_DIR = Path.home() / "否定词导出"
 USER_RUN_LOG = USER_ROOT / "运行记录.csv"
+#: 广告操盘手的记忆与每天一页的报告（插件形态）。报告路径进 [名字](/路径) 链接，不能有空格括号。
+USER_OPERATOR_DB = USER_ROOT / "operator.sqlite3"
+USER_REPORT_DIR = Path.home() / "广告操盘手"
 DEFAULT_PORT = 8790
 SERVICE_USER = "_amazonads"
 DEFAULT_TIME_BUDGET_SECONDS = 2700

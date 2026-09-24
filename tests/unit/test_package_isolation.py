@@ -13,7 +13,7 @@ CORE_SRC = Path(__file__).resolve().parents[2] / "src" / "ads_control_plane"
 
 def _violations(root: Path, forbidden: tuple[str, ...]) -> list[str]:
     found: list[str] = []
-    for path in root.rglob("*.py"):
+    for path in [root] if root.is_file() else root.rglob("*.py"):
         text = path.read_text(encoding="utf-8")
         for line_no, line in enumerate(text.splitlines(), start=1):
             stripped = line.strip()
@@ -57,4 +57,21 @@ def test_strategies_providers_and_adapters_never_import_the_pack_shell() -> None
     found: list[str] = []
     for layer in ("strategies", "providers", "adapters"):
         found.extend(_violations(CORE_SRC / layer, _PACK_SHELL))
+    assert found == []
+
+
+#: 广告操盘手的几块（2026-09-24）：下一版要由后台到点的那一轮直接调用，那条路上没有 SFW、
+#: 没有 MCP 服务端。它们一旦 import 了服务端，后台那一轮就得把整个服务端拉起来才能跑。
+_OPERATOR_PARTS = ("lxlock", "memory", "parse", "judge", "diary", "operator")
+
+
+def test_the_operator_never_imports_the_mcp_server() -> None:
+    found: list[str] = []
+    for name in _OPERATOR_PARTS:
+        found.extend(
+            _violations(
+                CORE_SRC / "sfw" / f"{name}.py",
+                ("mcp.server", "uvicorn", "ads_control_plane.sfw.server"),
+            )
+        )
     assert found == []

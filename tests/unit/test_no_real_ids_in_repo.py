@@ -102,7 +102,12 @@ SCANNED_SUFFIXES = {
     ".yml",
     ".example",
     ".sh",
+    ".plist",
+    ".csv",
 }
+#: 二进制的库文件读不成文本，上面那套扫不了；操盘手的记忆库里是真实 Profile ID 和
+#: 每个词的出价（2026-09-24 加），所以这一类整个不许进仓库。
+FORBIDDEN_SUFFIXES = {".sqlite", ".sqlite3", ".db", ".sqlite3-wal", ".sqlite3-shm"}
 SKIP_DIRS = {
     ".git",
     ".claude",  # Claude Code 的 worktree 会建在仓库内；那是别的检出，不归这条守卫扫
@@ -213,6 +218,17 @@ def test_no_real_object_ids_anywhere_in_the_repo() -> None:
         + "\n".join(sorted(set(offenders)))
         + "\n\n若确为手工编造，请加入本文件的 SYNTHETIC_IDS 并说明来源。"
     )
+
+
+def test_no_database_file_is_in_the_repo() -> None:
+    found = sorted(
+        path.relative_to(REPO).as_posix()
+        for path in REPO.rglob("*")
+        if path.is_file()
+        and path.suffix in FORBIDDEN_SUFFIXES
+        and not any(part in SKIP_DIRS for part in path.relative_to(REPO).parts)
+    )
+    assert found == [], f"库文件进了仓库：{found}"
 
 
 def test_a_sanitized_file_only_gets_a_pass_for_the_ids_it_listed(tmp_path: Path) -> None:

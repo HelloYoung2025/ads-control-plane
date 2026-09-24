@@ -1096,6 +1096,9 @@ def test_model_facing_text_does_not_promise_unattended_runs(tmp_path: Path) -> N
         "assets/fd.md": (ASSETS / "fd.md").read_text(encoding="utf-8"),
         "INSTRUCTIONS": INSTRUCTIONS,
         "TOOL_DESCRIPTION": TOOL_DESCRIPTION,
+        "PLUGIN_INSTRUCTIONS": server_module.PLUGIN_INSTRUCTIONS,
+        "sfw/operator.py": (REPO / "src/ads_control_plane/sfw/operator.py").read_text("utf-8"),
+        "sfw/diary.py": (REPO / "src/ads_control_plane/sfw/diary.py").read_text("utf-8"),
         "summarize()": summary,
         "README.md": (REPO / "README.md").read_text(encoding="utf-8"),
     }
