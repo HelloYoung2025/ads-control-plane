@@ -428,11 +428,12 @@ def test_stores_that_differ_only_by_name_share_one_line_at_the_end(tmp_path: Pat
     assert [b.split("：")[0] for b in blocks] == [
         "**干净店**",
         "**被拒店**",
-        "**空一、空二、空三**",
-        "**断网一、断网二**",
+        "**空一、空二、空三**（3 家）",
+        "**断网一、断网二**（2 家）",
     ]
-    assert blocks[2] == "**空一、空二、空三**：这段时间没有搜索词数据。"
-    assert blocks[3].startswith("**断网一、断网二**：取数失败（LX_TRANSPORT_ERROR）")
+    # 带上家数：66 家并成一行时，人数不过来（2026-09-24 评审）。
+    assert blocks[2] == "**空一、空二、空三**（3 家）：这段时间没有搜索词数据。"
+    assert blocks[3].startswith("**断网一、断网二**（2 家）：取数失败（LX_TRANSPORT_ERROR）")
 
 
 def test_an_empty_run_says_which_reason_it_was(tmp_path: Path) -> None:
@@ -451,7 +452,7 @@ def test_an_empty_run_says_which_reason_it_was(tmp_path: Path) -> None:
         "无源店": "这家店没接上数据源，找管理员。",
         "坏行店": "取到了 7 行，但没有一组能判断，找管理员。",
         "空店": "这段时间没有搜索词数据。",
-        "断网店": "取数失败（LX_TRANSPORT_ERROR），文件没有更新；等 1 分钟，"
+        "断网店": "取数失败（LX_TRANSPORT_ERROR），文件没有更新；过几分钟"
         "敲 /new 回车，再敲 /fd 回车回车，还不行找管理员。",
         "错币店": "数据不合规（CURRENCY_MISMATCH），文件没有更新，找管理员。",
     }
@@ -461,7 +462,8 @@ def test_an_empty_run_says_which_reason_it_was(tmp_path: Path) -> None:
         "ASIN店": "花了钱没出单的全是 ASIN（1 个），否定词挡不住，"
         "要去领星「否定投放」单独处理：b0demo0001。",
         "旧店": "数据太旧（超过 24 小时），这次没法判断；晚点敲 /new 回车，再敲 /fd 回车回车。",
-        "干净店": "看了 1 组（去重 1 个词），没有要否定的词。这不等于没有浪费：门槛以下的词不算。",
+        "干净店": "看了 1 组（去重 1 个词），没有要否定的词。"
+        "这不等于没有浪费：门槛按每个广告组单独算，没到门槛的词不算。",
     }
     for nickname, sentence in with_report.items():
         first, second = _block(text, nickname).split("\n")
@@ -469,7 +471,7 @@ def test_an_empty_run_says_which_reason_it_was(tmp_path: Path) -> None:
         _assert_report_link_only(second, nickname, export_dir)
     assert text.split("\n\n")[-1] == (
         f"门槛：统计 2026-08-18 到 {WINDOW_LAST_DAY}（最后几天的订单还没结算完，不算进来）；"
-        "花费 ≥ 20.00 USD、3000 JPY（按店币种）；点击 ≥ 25。"
+        "同一个广告组里花费 ≥ 20.00 USD、3000 JPY（按店币种）、点击 ≥ 25。"
         "有一些数据读不懂、已经跳过：上面每家店的结论只覆盖读得懂的那部分。"
         "\n本工具不改任何广告。"
     ), "一家店都没有 CSV 时，末尾不出现「把 CSV 交给管理员」那句，但「不改任何广告」要在"
@@ -520,7 +522,8 @@ def test_asin_terms_reach_the_text_only_in_asin_shape(tmp_path: Path) -> None:
     )
     # NO_CANDIDATES 那家店里的 ASIN 同样要说：不说，人会把「没有要否定的词」读成「这家店没浪费」。
     assert jp.startswith(
-        "**日本店**：看了 2 组（去重 2 个词），没有要否定的词。这不等于没有浪费：门槛以下的词不算。"
+        "**日本店**：看了 2 组（去重 2 个词），没有要否定的词。"
+        "这不等于没有浪费：门槛按每个广告组单独算，没到门槛的词不算。"
         "另有 1 个是 ASIN，否定词挡不住，要去领星「否定投放」单独处理：B0JPDEMO01。\n报表："
     )
     assert "asin-like weird" not in text, "不像 ASIN 的弃权词是外部自由文本，只进报表"
@@ -563,10 +566,8 @@ def test_source_error_for_one_store_does_not_hide_the_others(tmp_path: Path) -> 
     assert [run.outcome for run in runs] == [RunOutcome.CANDIDATES, RunOutcome.SOURCE_ERROR]
     assert runs[1].error_code == "LX_GATEWAY_ERROR"
     assert "**美国店**：看了 1 组（去重 1 个词），要否定 1 个。\n文件：[否定词-美国店-" in text
-    assert (
-        "**日本店**：取数失败（LX_GATEWAY_ERROR），文件没有更新；等 1 分钟，"
-        "敲 /new 回车，再敲 /fd 回车回车，还不行找管理员。"
-    ) in text
+    # 被拒不叫人「过几分钟再问」：再问还是同样的结果，只会白等一轮（2026-09-24 评审）。
+    assert "**日本店**：取数失败（LX_GATEWAY_ERROR），文件没有更新，找管理员。" in text
     assert not list(cfg.export_dir.glob("*日本店*"))
     assert [r[1:3] for r in _run_log_rows(cfg.run_log_path)[1:]] == [
         ["美国店", "CANDIDATES"],
@@ -611,7 +612,7 @@ def test_html_report_is_self_contained(tmp_path: Path) -> None:
     assert "活动&lt;甲&gt;" in html
     # ASIN、其余弃权、账目、门槛都在。
     assert "b0demo0001" in html and "否定投放" in html
-    assert "old widget" in html and "STALE_DATA" in html
+    assert "old widget" in html and "数据太旧" in html, "报表给人看：原因写中文，不写代码"
     assert "上游总行数" in html and "20.00 USD" in html and "点击 ≥ 25" in html
     assert f"统计 2026-08-18 到 {WINDOW_LAST_DAY}（最后几天的订单还没结算完，不算进来）" in html
 

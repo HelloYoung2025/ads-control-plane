@@ -1126,7 +1126,7 @@ def render_shops(rows: Sequence[object]) -> str:
             header,
             *table,
             "",
-            f"把下面的段落粘进 config.toml。{naming}",
+            f"把下面的段落粘到 config.toml 的最后面。{naming}",
             "（昵称会进文件名：中文、字母、数字、下划线、连字符，不超过 20 个字）。",
             "再到 [thresholds.min_spend] 给出现的每个币种各填一档门槛：",
             "",

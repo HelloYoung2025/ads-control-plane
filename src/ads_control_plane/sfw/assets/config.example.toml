@@ -12,16 +12,17 @@ sfw_bearer = "<安装时自动生成的口令，不要手改>"
 export_dir = "/Users/Shared/amazon-ads/导出"
 run_log_path = "/Users/Shared/amazon-ads/运行记录.csv"
 
-# 一次调用最多跑多少秒（60 到 3000）；没轮到的店下次再跑。
+# 过了这么多秒就不再开跑下一家店（60 到 3000）；没轮到的店下次再跑。
 time_budget_seconds = 2700
 
-# 领星网关：url 填领星 MCP 的网关地址；key 填领星 ERP 后台
-# 【业务配置 → 开放接口 → MCP】里当前账号生成的鉴权密钥（不是开放平台的 appId/appSecret）。
-# 这两项填好后，下面这行能列出可选店铺：
+# 领星网关。url 是领星帮助中心给的地址，一般不用改。
+# key：在领星 ERP 打开「AI助手」→【MCP】，点「复制密钥」，粘进下面 key 的两个引号中间。
+# 看不到这个入口：要公司的领星超级管理员先在【业务配置 → 开放接口 → MCP】里开通
+# （领星说仅限付费用户）。key 跟着领星账号走，这个账号能看到哪些店，下面这行就列出哪些店。
+# key 填好后，在「终端」里粘下面这行（别带前面的 #），它会打印可以直接粘贴的店铺段落：
 #   sudo amazon-ads shops
-# 密钥继承该账号的店铺权限：shops 列出来的，就是这个账号能看到的店。
 [lingxing]
-url = ""
+url = "https://openmcp.lingxing.com/mcp-servers/lingxing-mcp"
 key = ""
 
 # 店铺表：每家店一段，五项都要填（上面那行 shops 会打印可直接粘贴的段落）。

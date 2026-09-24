@@ -70,6 +70,10 @@ ASIN_SHAPE = re.compile(r"^B0[A-Z0-9]{8}$")
 #: 冻结集合上记的客户端标识：调用方恒是 SFW 里的模型。
 CLIENT_ID = "sfw"
 
+#: 这几种取数失败，过几分钟再问多半就好了：网络没通（同一页已问过 3 次）、翻页时数据在动。
+#: 其余的码再问还是同样的结果，叫人等只会白等一轮（2026-09-24 评审）。
+ASK_AGAIN_LATER_CODES = frozenset({"LX_TRANSPORT_ERROR", "SEARCH_TERM_PAGES_SHORT"})
+
 
 class RunOutcome(StrEnum):
     """一家店这一轮的结局。分这么细是因为每一项对应人**不同的下一步**：
@@ -261,8 +265,8 @@ def run_all(
     一行 WARNING：先后错了只是少推进一轮，不该让整次运行失败。
 
     于是预算**不是**整次调用的上界：最后开跑的那家店整个跑在预算之外。网关退化时
-    单店可以跑很久（每页两次往返、每次 60 秒超时、最多 20 页），整次调用就可能越过
-    SFW 登记的 tool_timeout_sec；越过那一刻孩子读到的是「工具没连上」，而服务其实
+    单店可以跑很久（每页两次往返、每次最长 60 秒、失败的页最多问 3 次、最多 40 页），
+    整次调用就可能越过 SFW 登记的 tool_timeout_sec；越过那一刻孩子读到的是「工具没连上」，而服务其实
     还在跑。这里不猜一个「单店最坏耗时」去提前收手——那个数只有 Provider 知道，
     猜小了照样超时，猜大了会平白少跑几家店。能做的是留痕：超了就写一行 WARNING，
     让管理员查得到「这次跑了多久」，而不是面对一句假的「没连上」和一份全绿的体检。
@@ -330,6 +334,17 @@ def _asin_tail(result: NegationRunResult) -> str:
     return f"{tail}{more}{note}。"
 
 
+def _plural_sentence(result: NegationRunResult) -> str:
+    """同组单复数在出单、所以没列的那几个：人在领星看到它们花了钱，会以为是漏报。"""
+    count = sum(1 for a in result.abstains if a.reason is AbstainReason.CLOSE_VARIANT_CONVERTS)
+    if count == 0:
+        return ""
+    return (
+        f"另有 {count} 个花了钱没出单、但没列：同一个广告组里它的单复数写法在出单，"
+        "否定会连那个词一起挡住（见报表）。"
+    )
+
+
 def _asin_sentence(result: NegationRunResult) -> str:
     count = result.asin_abstain_count
     if count == 0:
@@ -360,6 +375,7 @@ class Wording:
     retry: str  # 再跑一次怎么做
     escalate: str  # 重试解决不了时，那句话的结尾
     hand_over: str  # 有 CSV 时，回答的最后一句
+    thresholds_at: str = ""  # 门槛那一行的结尾：门槛在哪里改（系统形态下孩子改不了，留空）
 
 
 SYSTEM_WORDING = Wording(
@@ -377,10 +393,12 @@ def _sentence(run: StoreRun, wording: Wording) -> str:
     if outcome is RunOutcome.NO_DATA_SOURCE:
         return f"这家店没接上数据源，{wording.escalate}。"
     if outcome is RunOutcome.SOURCE_ERROR:
-        return (
-            f"取数失败（{run.error_code}），文件没有更新；等 1 分钟，"
-            f"{wording.retry}，还不行{wording.escalate}。"
-        )
+        if run.error_code in ASK_AGAIN_LATER_CODES:
+            return (
+                f"取数失败（{run.error_code}），文件没有更新；过几分钟"
+                f"{wording.retry}，还不行{wording.escalate}。"
+            )
+        return f"取数失败（{run.error_code}），文件没有更新，{wording.escalate}。"
     if outcome is RunOutcome.DATA_REJECTED:
         return f"数据不合规（{run.error_code}），文件没有更新，{wording.escalate}。"
     assert run.fetch is not None and run.result is not None and run.pack is not None
@@ -404,18 +422,19 @@ def _sentence(run: StoreRun, wording: Wording) -> str:
     if outcome is RunOutcome.NO_CANDIDATES:
         return (
             looked
-            + "没有要否定的词。这不等于没有浪费：门槛以下的词不算。"
-            + (_asin_sentence(result))
+            + "没有要否定的词。这不等于没有浪费：门槛按每个广告组单独算，没到门槛的词不算。"
+            + _plural_sentence(result)
+            + _asin_sentence(result)
         )
     # CANDIDATES。CSV 与冻结集合恒含全部候选，所以这个数就是全部；多出来的只是
     # 报表表格没列全，而表格是给人看的、CSV 才是拿去执行的，两者的差别要说出口。
     count = f"要否定 {len(result.candidates)} 个"
     if len(result.candidates) > report.MAX_CANDIDATES_IN_TABLE:
         count += f"（报表表格只列花费最高的 {report.MAX_CANDIDATES_IN_TABLE} 个，CSV 里是全部）"
-    return looked + count + "。" + _asin_sentence(result)
+    return looked + count + "。" + _plural_sentence(result) + _asin_sentence(result)
 
 
-def _threshold_line(runs: Sequence[StoreRun], cfg: PackConfig) -> str:
+def _threshold_line(runs: Sequence[StoreRun], cfg: PackConfig, wording: Wording) -> str:
     """末尾一行：统计区间、按本轮出现的币种列门槛、两笔没判断的账。"""
     start, end = runs[0].window
     last_day = (end - timedelta(days=1)).date().isoformat()
@@ -426,8 +445,9 @@ def _threshold_line(runs: Sequence[StoreRun], cfg: PackConfig) -> str:
     line = (
         f"门槛：统计 {start.date().isoformat()} 到 {last_day}"
         "（最后几天的订单还没结算完，不算进来）；"
-        f"花费 ≥ {spend}（按店币种）；"
+        f"同一个广告组里花费 ≥ {spend}（按店币种）、"
         f"点击 ≥ {cfg.thresholds.min_clicks}。"
+        f"{wording.thresholds_at}"
     )
     if unjudged or unattributable:
         # 不再引「上面说的『没有要否定的词』」：那句话只在部分结局里出现，别的结局下
@@ -456,8 +476,11 @@ def summarize(runs: Sequence[StoreRun], cfg: PackConfig, wording: Wording = SYST
             alike.setdefault(sentence, []).append(run.store.nickname)
         else:
             blocks.append(f"**{run.store.nickname}**：{sentence}")
-    blocks += [f"**{'、'.join(names)}**：{sentence}" for sentence, names in alike.items()]
-    tail = _threshold_line(runs, cfg)
+    blocks += [
+        f"**{'、'.join(names)}**（{len(names)} 家）：{sentence}"
+        for sentence, names in alike.items()
+    ]
+    tail = _threshold_line(runs, cfg, wording)
     # 无条件：孩子刚在弹窗上点了「批准」，这一句是他判断广告有没有被改的唯一依据。
     # 此前它挂在「有 CSV」这个条件下，于是全是 ASIN、没有要否定的词、取数全失败这三种
     # 结局里，一个刚按完批准的 10 岁孩子读不到任何一句说「我没动你的广告」。

@@ -202,11 +202,38 @@ class _RawConfig(BaseModel):
     thresholds: _RawThresholds = _RawThresholds()
 
 
+#: 中文输入法和「文本编辑」会把直引号换成这几个，TOML 不认。
+_CURLY_QUOTES = "“”‘’"
+
+
 def _load_toml(text: str) -> dict[str, Any]:
+    """语法错只报第几行、错在哪，不回显那一行：那一行可能就是 key，而这句话会被念进对话。
+
+    此前原样转述 tomllib 的英文（「Invalid value (at line 24, column 7)」），后面还接着
+    「把缺的填上」，而「文本编辑」不显示行号（2026-09-24 评审）。
+    """
     try:
         return tomllib.loads(text)
     except tomllib.TOMLDecodeError as exc:
-        raise ConfigError("CONFIG_SYNTAX", f"配置文件不是合法的 TOML：{exc}") from exc
+        curly = [
+            n
+            for n, line in enumerate(text.splitlines(), start=1)
+            if any(q in line.split("#", 1)[0] for q in _CURLY_QUOTES)
+        ]
+        if curly:
+            where = "、".join(str(n) for n in curly[:5])
+            raise ConfigError(
+                "CONFIG_SYNTAX",
+                f'配置文件第 {where} 行用了中文弯引号 “ ”，要改成英文直引号 "',
+            ) from exc
+        # 3.12 的 TOMLDecodeError 没有 lineno 属性，行号只在原话里（2026-09-24 实测）。
+        found = re.search(r"at line (\d+)", str(exc))
+        where = f"第 {found.group(1)} 行" if found else "末尾"
+        raise ConfigError(
+            "CONFIG_SYNTAX",
+            f'配置文件{where}写法不对：等号右边的值要用一对英文直引号 " 包起来'
+            '（例如 key = "abc"），粘贴时别把两边的引号盖掉，也别粘进好几行',
+        ) from exc
 
 
 def _shape_error(exc: ValidationError) -> ConfigError:
@@ -226,13 +253,17 @@ def _shape_error(exc: ValidationError) -> ConfigError:
 
 
 def _lingxing_credentials(raw: _RawLingxing) -> tuple[str, str]:
-    for field in ("url", "key"):
-        value: str = getattr(raw, field)
-        if not value or value != value.strip():
-            raise ConfigError(
-                "LINGXING_CREDENTIALS_MISSING",
-                f"[lingxing] 的 {field} 还没填（或首尾带着空格）",
-            )
+    # 缺几项一次说全：逐项报的话，只填了 url 的人要再问一轮才知道 key 也要填。
+    missing = [
+        field
+        for field in ("url", "key")
+        if not (value := getattr(raw, field)) or value != value.strip()
+    ]
+    if missing:
+        raise ConfigError(
+            "LINGXING_CREDENTIALS_MISSING",
+            f"[lingxing] 的 {' 和 '.join(missing)} 还没填（或首尾带着空格）",
+        )
     return raw.url, raw.key
 
 
@@ -295,11 +326,13 @@ def _parse_stores(raw_stores: list[_RawStore], thresholds: Thresholds) -> tuple[
     if not raw_stores:
         raise ConfigError(
             "STORES_EMPTY",
-            "[[stores]] 店铺表是空的：至少要填一家店（sudo amazon-ads shops 会列出可选的店铺）",
+            "[[stores]] 店铺表是空的：至少要填一家店。配置文件 [lingxing] 上方注释里那行 shops "
+            "命令会打印可以直接粘贴的店铺段落",
         )
     stores: list[StoreConfig] = []
     seen_profiles: set[str] = set()
     seen_nicknames: set[str] = set()
+    unpriced: dict[str, list[str]] = {}  # 币种 → 用它的店；一次说全，不让人补一个问一轮
     for index, raw in enumerate(raw_stores, start=1):
         for field in ("profile_id", "sid", "marketplace", "currency"):
             value: str = getattr(raw, field)
@@ -326,11 +359,7 @@ def _parse_stores(raw_stores: list[_RawStore], thresholds: Thresholds) -> tuple[
                 f"[[stores]] 里昵称「{raw.nickname}」出现了两次：文件名会撞车",
             )
         if raw.currency not in thresholds.min_spend:
-            raise ConfigError(
-                "CURRENCY_THRESHOLD_MISSING",
-                f"店铺「{raw.nickname}」的币种 {raw.currency} "
-                "在 [thresholds.min_spend] 里没有花费门槛",
-            )
+            unpriced.setdefault(raw.currency, []).append(raw.nickname)
         seen_profiles.add(raw.profile_id)
         seen_nicknames.add(raw.nickname)
         stores.append(
@@ -341,6 +370,15 @@ def _parse_stores(raw_stores: list[_RawStore], thresholds: Thresholds) -> tuple[
                 currency=raw.currency,
                 nickname=raw.nickname,
             )
+        )
+    if unpriced:
+        listed = "、".join(
+            f"{currency}（{'、'.join(names)}）" for currency, names in unpriced.items()
+        )
+        raise ConfigError(
+            "CURRENCY_THRESHOLD_MISSING",
+            f"这些币种在 [thresholds.min_spend] 里没有花费门槛：{listed}；"
+            "照已有那一行的样子各加一行，金额带英文直引号",
         )
     return tuple(stores)
 
@@ -410,7 +448,7 @@ def check_private_file(path: Path, *, expect_uid: int | None) -> None:
         raise ConfigError(
             "CONFIG_TOO_OPEN",
             f"配置文件 {path} 的权限是 {stat.S_IMODE(st.st_mode):04o}，别的用户也能读到里面的密钥；"
-            "要改成 0600（chmod 600）",
+            f"要改回 0600：chmod 600 '{path}'",
         )
     if expect_uid is not None and st.st_uid != expect_uid:
         raise ConfigError(
@@ -449,6 +487,11 @@ def read_lingxing_credentials(path: Path, *, expect_uid: int | None) -> tuple[st
 #: 公开仓库地址。插件形态下，模板里给人抄的命令要从这里拼出来。
 REPO_URL = "https://github.com/HelloYoung2025/ads-control-plane"
 
+#: 领星 MCP 的服务器 URL。领星帮助中心 https://www.lingxing.com/help/article/mcp 让所有人填
+#: 这一个（2026-09-24 查），本机那个 74 家店的账号填的也是它（同日核对）。模板里直接写好，
+#: 人只需要粘 key——在界面上要拿到 URL 得先点「复制JSON」再从一段 JSON 里抠出来。
+LINGXING_MCP_URL = "https://openmcp.lingxing.com/mcp-servers/lingxing-mcp"
+
 #: 列店铺的命令。系统形态有装好的 amazon-ads；插件形态一条命令都没装，只能借 uvx 跑。
 SHOPS_CMD_SYSTEM = "sudo amazon-ads shops"
 
@@ -484,8 +527,9 @@ TEMPLATE_HEADER_SYSTEM = """\
 # 改完执行 sudo amazon-ads doctor 检查，再 sudo amazon-ads start。"""
 
 TEMPLATE_HEADER_USER = """\
-# amazon-ads 配置。这个文件只有你自己能读（0600）：别复制到别处，别把密钥贴进聊天。
-# 下面 [lingxing] 的两项填完就能用；改完回 SFW 开一个新对话即可，不用重启什么。"""
+# amazon-ads 配置。这个文件只有你自己能读（0600）：别复制到别处；key 别贴进 SFW 对话，
+# 也别让助手替你填。填好下面 [lingxing] 的 key 和 [[stores]] 店铺表就能用；
+# 存好后回 SFW 开一个新对话即可，不用重启什么。"""
 
 _TEMPLATE = """\
 {header}
@@ -501,16 +545,17 @@ sfw_bearer = "{sfw_bearer}"
 export_dir = "{export_dir}"
 run_log_path = "{run_log_path}"
 
-# 一次调用最多跑多少秒（60 到 3000）；没轮到的店下次再跑。
+# 过了这么多秒就不再开跑下一家店（60 到 3000）；没轮到的店下次再跑。
 time_budget_seconds = {time_budget_seconds}
 
-# 领星网关：url 填领星 MCP 的网关地址；key 填领星 ERP 后台
-# 【业务配置 → 开放接口 → MCP】里当前账号生成的鉴权密钥（不是开放平台的 appId/appSecret）。
-# 这两项填好后，下面这行能列出可选店铺：
+# 领星网关。url 是领星帮助中心给的地址，一般不用改。
+# key：在领星 ERP 打开「AI助手」→【MCP】，点「复制密钥」，粘进下面 key 的两个引号中间。
+# 看不到这个入口：要公司的领星超级管理员先在【业务配置 → 开放接口 → MCP】里开通
+# （领星说仅限付费用户）。key 跟着领星账号走，这个账号能看到哪些店，下面这行就列出哪些店。
+# key 填好后，在「终端」里粘下面这行（别带前面的 #），它会打印可以直接粘贴的店铺段落：
 #   {shops_cmd}
-# 密钥继承该账号的店铺权限：shops 列出来的，就是这个账号能看到的店。
 [lingxing]
-url = ""
+url = "{lingxing_url}"
 key = ""
 
 # 店铺表：每家店一段，五项都要填（上面那行 shops 会打印可直接粘贴的段落）。
@@ -556,6 +601,7 @@ def render_config_template(
     """
     return _TEMPLATE.format(
         header=header,
+        lingxing_url=LINGXING_MCP_URL,
         shops_cmd=shops_cmd,
         bearer_note=bearer_note,
         organization_id=organization_id,

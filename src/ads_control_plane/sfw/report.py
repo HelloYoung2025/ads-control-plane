@@ -144,10 +144,16 @@ th{background:#f3f3f3}.num{white-space:nowrap;font-variant-numeric:tabular-nums}
 code{font-family:Menlo,monospace;font-size:13px;word-break:break-all}
 """
 
+#: 「其余弃权」表的原因列：报表是给人看的，英文代码只留作找不到中文说法时的兜底。
+_REASON_LABELS = {
+    AbstainReason.STALE_DATA: "数据太旧",
+    AbstainReason.CLOSE_VARIANT_CONVERTS: "同组单复数在出单",
+}
+
 _HEADLINES = {
     "CANDIDATES": "要否定 {n} 个词（看了 {evaluated} 组，去重 {distinct} 个词）",
     "NO_CANDIDATES": "看了 {evaluated} 组（去重 {distinct} 个词），没有要否定的词。"
-    "这不等于没有浪费：门槛以下的词不算",
+    "这不等于没有浪费：门槛按每个广告组单独算，没到门槛的词不算",
     "ALL_ASIN": "花了钱没出单的全是 ASIN（{asin} 个），否定词挡不住",
     "ALL_ABSTAINED": "数据太旧（超过 {stale} 小时），这次没法判断",
 }
@@ -211,7 +217,7 @@ def render_report_html(run: StoreRun) -> str:
         f"<p><strong>{_e(headline)}。</strong></p>",
         "<p>统计 "
         + _e(_day_span(run.window[0], run.window[1]))
-        + "（最后几天的订单还没结算完，不算进来）；门槛：花费 ≥ "
+        + "（最后几天的订单还没结算完，不算进来）；门槛（同一个广告组里）：花费 ≥ "
         + _e(f"{pack.min_spend.amount} {pack.min_spend.currency}")
         + f"、点击 ≥ {pack.min_clicks}；"
         f"回看 {pack.lookback_days} 天。</p>",
@@ -236,7 +242,7 @@ def render_report_html(run: StoreRun) -> str:
         parts.append(
             f"<p class='note'>本次命中 {len(candidates)} 个候选，下表只列了花费最高的 "
             f"{len(shown)} 个；<strong>CSV 里是全部 {len(candidates)} 个</strong>，"
-            "交给领星的是 CSV，不是这张表。</p>"
+            "要加的以 CSV 为准，不是这张表。</p>"
         )
     if shown:
         parts.append(f"<h2>要否定的词（表里 {len(shown)} / 共 {len(candidates)}）</h2>")
@@ -281,7 +287,11 @@ def render_report_html(run: StoreRun) -> str:
             _table(
                 ("搜索词", "原因", "说明"),
                 (
-                    [f"<code>{_e(a.search_term)}</code>", _e(a.reason.value), _e(a.detail)]
+                    [
+                        f"<code>{_e(a.search_term)}</code>",
+                        _e(_REASON_LABELS.get(a.reason, a.reason.value)),
+                        _e(a.detail),
+                    ]
                     for a in others
                 ),
             )

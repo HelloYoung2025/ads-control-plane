@@ -4,7 +4,7 @@
       "command": "/bin/sh",
       "args": [
         "-c",
-        "S=\"git+https://github.com/HelloYoung2025/ads-control-plane@v0.1.2\"\n# SFW 是从访达启动的图形程序，它的 PATH 不一定包含 uv 装的地方（装到 ~/.local/bin 的\n# 那种在 GUI 里通常看不见）。所以不直接写 uvx，而是把常见的几处挨个试一遍。\nfor u in \"$HOME/.local/bin/uvx\" /opt/homebrew/bin/uvx /usr/local/bin/uvx uvx; do\n  command -v \"$u\" >/dev/null 2>&1 && exec \"$u\" --from \"$S\" amazon-ads-mcp\ndone\necho \"这台电脑上找不到 uv。打开「终端」粘这一行装上，再回 SFW 重开一个对话：\" >&2\necho \"  curl -LsSf https://astral.sh/uv/install.sh | sh\" >&2\nexit 127"
+        "V=0.1.3\nS=\"git+https://github.com/HelloYoung2025/ads-control-plane@v0.1.3\"\n# 装过（README「装」第二块最后一行的 uv tool install）就直接跑装好的那份，启动时不联网。\n# 走 uvx 的话，每次拉起都要现连 GitHub 解析 tag、现连 PyPI 解析依赖，哪个连不上插件就起不来\n# （2026-09-24 评审实测）。装好的那份不是清单上这一版时不用它：清单是 A 版、跑的是 B 版，\n# 界面上看不出来。\nB=\"$HOME/.local/bin\"\n[ \"$(\"$B/amazon-ads\" --version 2>/dev/null)\" = \"$V\" ] && exec \"$B/amazon-ads-mcp\"\n# SFW 是从访达启动的图形程序，它的 PATH 不一定包含 uv 装的地方（装到 ~/.local/bin 的\n# 那种在 GUI 里通常看不见）。所以不直接写 uvx，而是把常见的几处挨个试一遍。\nfor u in \"$HOME/.local/bin/uvx\" /opt/homebrew/bin/uvx /usr/local/bin/uvx uvx; do\n  command -v \"$u\" >/dev/null 2>&1 && exec \"$u\" --from \"$S\" amazon-ads-mcp\ndone\necho \"这台电脑上找不到 uv。打开「终端」粘这一行装上，再把 SFW 完全退出（⌘Q）重新打开：\" >&2\necho \"  curl -LsSf https://astral.sh/uv/install.sh | sh\" >&2\nexit 127"
       ],
       "startup_timeout_sec": 600,
       "tool_timeout_sec": 3600

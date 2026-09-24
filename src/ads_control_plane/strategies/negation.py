@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import unicodedata
 import uuid
 from collections.abc import Callable, Sequence
 from datetime import datetime, timedelta
@@ -178,6 +179,12 @@ class AbstainReason(StrEnum):
     #: 与 STALE_DATA 的共同点不是"数据有问题"，而是"我没能给出可执行的结论"：
     #: 这两种都必须显式说出来，否则它们与"这个词没问题"在响应里逐字同形。
     ASIN_NOT_A_KEYWORD = "ASIN_NOT_A_KEYWORD"
+    #: 证据齐了，但同一个广告组里它的单复数写法在出单。亚马逊的否定精准连单复数一起挡
+    #: （Amazon Ads 帮助 targeting-with-sponsored-products：negative exact 挡 "close
+    #: variation"，"Exact match also includes the plural form"；2026-09-24 评审时联网核对），
+    #: 否掉这个 0 单的写法，就把同组正在出单的那个写法一起挡了。要显式说出来：人在领星
+    #: 看到这个词花了钱，会以为是漏报。
+    CLOSE_VARIANT_CONVERTS = "CLOSE_VARIANT_CONVERTS"
 
 
 class AbstainRecord(BaseModel):
@@ -236,6 +243,10 @@ def generate_negation_candidates(
     seen: set[tuple[str, ...]] = set()
     candidates: list[NegationCandidate] = []
     abstains: list[AbstainRecord] = []
+    selling: dict[tuple[str, ...], list[str]] = {}
+    for record in records:
+        if record.conversions > 0:
+            selling.setdefault(record.scope.uniqueness_key(), []).append(record.search_term)
     for record in records:
         key = (*record.scope.uniqueness_key(), record.search_term.casefold())
         if key in seen:
@@ -289,6 +300,22 @@ def generate_negation_candidates(
                 )
             )
             continue
+        sibling = _selling_plural_sibling(
+            record.search_term, selling.get(record.scope.uniqueness_key(), ())
+        )
+        if sibling is not None:
+            abstains.append(
+                AbstainRecord(
+                    search_term=record.search_term,
+                    reason=AbstainReason.CLOSE_VARIANT_CONVERTS,
+                    detail=(
+                        f"花了 {record.spend.amount} {record.spend.currency}、"
+                        f"{record.clicks} 次点击没出单，但同一个广告组里「{sibling}」在出单；"
+                        "否定精准会连单复数一起挡，否掉它就把那个词也挡了"
+                    ),
+                )
+            )
+            continue
         candidates.append(
             NegationCandidate(
                 candidate_id=id_factory(),
@@ -316,6 +343,35 @@ def generate_negation_candidates(
         # 会让这个数和候选是按什么合并出来的对不上。
         distinct_search_terms=len({r.search_term.casefold() for r in records}),
     )
+
+
+def _word_forms(word: str) -> set[str]:
+    """一个词去掉英文复数词尾后可能的样子（-s、-es、-ies→-y）。
+
+    只折叠单复数：亚马逊写明否定精准连单复数一起挡；错拼、词干这些没核实，不猜。
+    两个词只要可能的样子有交集就算同一个词——宁可多放过一个候选，也不否掉在卖的词。
+    """
+    forms = {word}
+    if len(word) > 3 and word.endswith("s") and not word.endswith("ss"):
+        forms.add(word[:-1])
+        if word.endswith("es"):
+            forms.add(word[:-2])
+        if word.endswith("ies"):
+            forms.add(word[:-3] + "y")
+    return forms
+
+
+def _only_number_differs(a: str, b: str) -> bool:
+    words_a = unicodedata.normalize("NFKC", a).casefold().split()
+    words_b = unicodedata.normalize("NFKC", b).casefold().split()
+    return len(words_a) == len(words_b) and all(
+        _word_forms(x) & _word_forms(y) for x, y in zip(words_a, words_b, strict=True)
+    )
+
+
+def _selling_plural_sibling(term: str, selling: Sequence[str]) -> str | None:
+    """同组在出单的词里，和 term 只差单复数（及大小写、全半角、空白）的第一个。"""
+    return next((s for s in selling if _only_number_differs(term, s)), None)
 
 
 class CandidateSetState(StrEnum):
