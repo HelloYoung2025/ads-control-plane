@@ -245,7 +245,12 @@ def test_the_readme_installs_the_same_version_from_the_same_marketplace() -> Non
     assert remove in README and README.index(remove) < README.index(add)
     assert f"plugin add {MANIFEST['name']}@{MARKET['name']}" in README
     # 装到本机的那一份必须是同一个 tag，否则插件是 A 版、跑起来的是 B 版。
-    assert f'uv tool install --force "git+{REPO_URL}@v{version}"' in README
+    # 各步用 && 串起来、最后才说「装好了」：几行各自独立时，前面装插件失败了，
+    # 最后一行照样成功，屏幕上是一个假的成功信号（2026-09-24 评审）。
+    assert (
+        f"plugin add {MANIFEST['name']}@{MARKET['name']} &&\n"
+        f'uv tool install --force "git+{REPO_URL}@v{version}" &&\necho "装好了'
+    ) in README
     # 列店铺那行同理：README 直接给出命令，人不用去配置文件的注释里抠（2026-09-24 评审）。
     assert (
         f"uvx --from git+{REPO_URL}@v{version} amazon-ads shops --config ~/.amazon-ads/config.toml"
