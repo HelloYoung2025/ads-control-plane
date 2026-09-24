@@ -12,6 +12,8 @@ SFW 电商 Pack 里的**亚马逊否定词组件**，做成一个 SFW 插件：�
 装之前先打开 SFW、登录好、能正常对话：组件装在 SFW 引擎自己的目录里，SFW 没跑起来过就没有
 那个目录，第二块会报 `CODEX_HOME points to … but that path does not exist`（2026-09-24 实测）。
 
+打开「终端」：按 ⌘ 空格，输入「终端」（英文系统输入 Terminal），回车。
+
 **第一块**：装两样工具（只有第一次需要，也不用先有 Python）。
 
 ```bash
@@ -25,23 +27,26 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
 装完**把终端窗口关掉、重新开一个**，不然下一块找不到刚装上的 uv。
 
-**第二块**：先把 SFW **完全退出（⌘Q）**，再把这一块整块粘进去回车。第一次装和以后升级都粘
-这一块：第三行先把装过的旧版挪掉（第一次装时它什么也不做），接着两行把插件装进 SFW，
-最后一行把组件本身装到这台电脑上。
+**第二块**：先把 SFW **完全退出**：点一下 SFW 的窗口，再按 ⌘Q（⌘Q 退的是最前面的那个程序，
+别把终端或浏览器退了）。然后回到终端，把这一块整块粘进去回车。第一次装和以后升级都粘这一块，
+一个字都不用改：第三行先把装过的旧版挪掉（第一次装时它什么也不做），接着两行把插件装进 SFW，
+再一行把组件本身装到这台电脑上。
 
 ```bash
 export CODEX_HOME=~/.sfw/engine-home
 C=/Applications/SFW.app/Contents/Frameworks/vendor/bin/codex
 "$C" plugin marketplace remove ecom-pack 2>/dev/null
-"$C" plugin marketplace add HelloYoung2025/ads-control-plane@v0.1.3
-"$C" plugin add amazon-ads@ecom-pack
-uv tool install --force "git+https://github.com/HelloYoung2025/ads-control-plane@v0.1.3"
+"$C" plugin marketplace add HelloYoung2025/ads-control-plane@v0.1.3 &&
+"$C" plugin add amazon-ads@ecom-pack &&
+uv tool install --force "git+https://github.com/HelloYoung2025/ads-control-plane@v0.1.3" &&
+echo "装好了，现在打开 SFW"
 ```
 
-看到 `Added plugin` 和最后的 `Installed 2 executables` 就是装好了，这时再打开 SFW
-（后面要是还跟着一行 `warning: … is not on your PATH`，不用管）。
-最后一行第一次要两三分钟（2026-09-22 实测冷缓存 159 秒）。装好以后 SFW 拉起组件不用联网；
-跳过它也能用，但每次拉起都要现连 GitHub 和 PyPI，哪个连不上就起不来（2026-09-24 实测）。
+最后出现「装好了，现在打开 SFW」才算装好，这时再打开 SFW（前面夹着一行
+`warning: … is not on your PATH` 的话不用管）。没出现，就是中间哪一步报了错，往上翻看是
+哪一句（最常见的两种见上面）。组件那一步第一次要两三分钟（2026-09-22 实测冷缓存 159 秒）。
+装好以后 SFW 拉起组件不用联网；跳过它也能用，但每次拉起都要现连 GitHub 和 PyPI，
+哪个连不上就起不来（2026-09-24 实测）。
 
 两处 `@v0.1.3` 别删：它钉住你装的是哪一版。只换版本号、不先挪掉旧的，会报
 「already added from a different source」（2026-09-23 实测），所以第三行不能省。
@@ -152,9 +157,9 @@ open -e ~/.amazon-ads/config.toml
 | `SEARCH_TERM_RESULT_TOO_LARGE`<br>`SEARCH_TERM_PAGE_BUDGET_EXCEEDED` | 这家店这段时间的搜索词太多，一次拉不完 | 把 `config.toml` 里的 `lookback_days` 改小（比如 30 改成 14） |
 | 其余的码，或「取到了 N 行，但没有一组能判断」 | 领星给的数据和这一版认得的不一样 | 换新版本 |
 
-**换新版本**：到本仓库的 [tags](https://github.com/HelloYoung2025/ads-control-plane/tags)
-看有没有比你装的更新的版本号。有，就先 ⌘Q 退出 SFW，把「装」第二块里两处版本号换成它，整块重粘一遍，再打开 SFW；
-没有，就到 Issues 里贴上那串英文和日期（别贴 key 和店名）。领星 2026-09-23 就改过一次接口，`v0.1.0` 从那天起每次取数都被拒。
+**换新版本**：点一下 SFW 的窗口按 ⌘Q，把本页「装」第二块原样再粘一遍（本页上的就是最新发布的
+那一版，一个字都不用改），出现「装好了」再打开 SFW。还是一样，就到 Issues 里贴上那串英文和日期
+（别贴 key 和店名）。领星 2026-09-23 就改过一次接口，`v0.1.0` 从那天起每次取数都被拒。
 
 ## 另一种装法（管理员装给别人用）
 
