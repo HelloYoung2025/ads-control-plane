@@ -173,6 +173,7 @@ def _card(goal: Goal, runs: list[Run], memory: Memory) -> tuple[str, str]:
             red = " red" if alert in ("ORDERS_HALVED", "SPEND_JUMPED") else ""
             parts.append(f"<div class='alert{red}'>{_e(ALERT_WORD.get(alert, alert))}</div>")
         parts.append(_proposals(facts, currency))
+        parts.append(_hints(facts, currency))
         parts.append(_humans(facts, currency))
         parts.append(_holds(facts))
     parts.append(_remembers(goal, memory))
@@ -182,10 +183,7 @@ def _card(goal: Goal, runs: list[Run], memory: Memory) -> tuple[str, str]:
     return light, "".join(parts)
 
 
-def _proposals(facts: dict[str, object], currency: str) -> str:
-    items = facts.get("proposals")
-    if not isinstance(items, list) or not items:
-        return "<h3>本来会改</h3><p class='sub'>这一轮没有要改的。</p>"
+def _bid_table(items: list[object], currency: str) -> str:
     rows: list[list[str]] = []
     for item in items[:MAX_ROWS]:
         if not isinstance(item, dict):
@@ -202,9 +200,22 @@ def _proposals(facts: dict[str, object], currency: str) -> str:
                 f"ACOS {_e(_percent(_acos(item)))}</span>",
             ]
         )
-    return "<h3>本来会改（只看不动：都没有真的改）</h3>" + _table(
-        ["", "关键词 / 投放", "出价", "为什么", "证据"], rows
-    )
+    return _table(["", "关键词 / 投放", "出价", "为什么", "证据"], rows)
+
+
+def _proposals(facts: dict[str, object], currency: str) -> str:
+    items = facts.get("proposals")
+    if not isinstance(items, list) or not items:
+        return "<h3>本来会改</h3><p class='sub'>这一轮没有要改的。</p>"
+    return "<h3>本来会改（只看不动：都没有真的改）</h3>" + _bid_table(items, currency)
+
+
+def _hints(facts: dict[str, object], currency: str) -> str:
+    """ACOS 远低于上限的词：只提示，它不会去加（S2 也只降价）。"""
+    items = facts.get("hints")
+    if not isinstance(items, list) or not items:
+        return ""
+    return "<h3>可以多花一点（只是提示，它不会去加）</h3>" + _bid_table(items, currency)
 
 
 def _humans(facts: dict[str, object], currency: str) -> str:

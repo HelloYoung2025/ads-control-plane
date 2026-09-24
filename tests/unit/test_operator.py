@@ -210,6 +210,26 @@ def test_the_report_page_is_private_and_escapes_what_came_from_lingxing(rig: Rig
     assert list(page.parent.glob(".*.tmp")) == [], "临时文件不留下"
 
 
+def test_the_report_lists_the_words_that_could_take_more(rig: Rig) -> None:
+    """加价只是提示：不进决定账，但报告里要看得见，否则 README 那句「报告里提示」就是假话。"""
+    hot(rig.fake)
+    w = windows_for(TODAY)
+    long, short = w.long.report_date, w.short.report_date
+    rig.fake.set(long, "kw-1", impressions=2000, clicks=80, orders=10, spend="10", sales="400")
+    rig.fake.set(short, "kw-1", impressions=1000, clicks=40, orders=5, spend="5", sales="200")
+    rig.say(ADOPT)
+    rig.say("猫抓板现在看一遍")
+    text = rig.page().read_text(encoding="utf-8")
+    assert "可以多花一点（只是提示，它不会去加）" in text
+    assert "1.00 → 1.10 ↑" in text
+    memory = rig.memory()
+    goal = memory.goal_named("猫抓板")
+    assert goal is not None
+    run = memory.recent_runs(goal.id, 1)[0]
+    assert all(d.object_id != "kw-1" for d in memory.decisions(run.id)), "提示不进决定账"
+    memory.close()
+
+
 def test_a_second_look_the_same_day_does_not_reuse_the_same_numbers(rig: Rig) -> None:
     hot(rig.fake)
     rig.say(ADOPT)
