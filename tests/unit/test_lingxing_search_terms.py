@@ -935,6 +935,53 @@ def test_uncoded_upstream_error_still_arrives_with_a_code() -> None:
     with pytest.raises(SearchTermSourceError) as exc:
         fetch(source)
     assert exc.value.code == "SEARCH_TERM_UPSTREAM_ERROR"
+    assert len(port.calls) == 1
+
+
+class _FlakyPort(FakeReadPort):
+    """第 n 次调用（从 1 数）抛 fail_on[n] 这个码，其余调用照常返回。"""
+
+    def __init__(self, pages: list[list[dict[str, object]]], fail_on: dict[int, str]) -> None:
+        super().__init__(pages)
+        self._fail_on = fail_on
+
+    def fetch_page(self, tool_id: str, params: dict[str, object]) -> dict[str, object]:
+        code = self._fail_on.get(len(self.calls) + 1)
+        if code is None:
+            return super().fetch_page(tool_id, params)
+        self.calls.append((tool_id, dict(params)))
+        raise CodedUpstreamError(code)
+
+
+def test_a_network_blip_asks_the_same_page_again_instead_of_failing_the_store() -> None:
+    """2026-09-23 真实运行：74 家店里 1 家撞上一次 LX_TRANSPORT_ERROR，整店记为取数失败，
+    要看那家店只能把 74 家整轮重跑（4 分多钟）。断在第 2 页就再问第 2 页，不从头翻。"""
+    pages = [[term_row(query="first")], [term_row(query="second")]]
+    port = _FlakyPort(pages, fail_on={2: "LX_TRANSPORT_ERROR", 3: "LX_TRANSPORT_ERROR"})
+    source = LingxingSearchTermSource(port, bindings={PROFILE: make_binding()})
+    records = fetch(source)
+    assert sorted(r.search_term for r in records) == ["first", "second"]
+    assert [params["page"] for _, params in port.calls] == [1, 2, 2, 2]
+    assert port.calls[1] == port.calls[3]
+
+
+def test_a_network_failure_that_persists_still_fails_after_three_asks() -> None:
+    port = _FlakyPort([[term_row()]], fail_on=dict.fromkeys(range(1, 10), "LX_TRANSPORT_ERROR"))
+    source = LingxingSearchTermSource(port, bindings={PROFILE: make_binding()})
+    with pytest.raises(SearchTermSourceError) as exc:
+        fetch(source)
+    assert exc.value.code == "LX_TRANSPORT_ERROR"
+    assert len(port.calls) == 3
+
+
+def test_a_refusal_is_not_asked_again() -> None:
+    """网关拒了（参数错、版本过期）再问还是同一句，多问只是多撞 QPS 限额。"""
+    port = _FlakyPort([[term_row()]], fail_on=dict.fromkeys(range(1, 10), "LX_GATEWAY_ERROR"))
+    source = LingxingSearchTermSource(port, bindings={PROFILE: make_binding()})
+    with pytest.raises(SearchTermSourceError) as exc:
+        fetch(source)
+    assert exc.value.code == "LX_GATEWAY_ERROR"
+    assert len(port.calls) == 1
 
 
 # ---------------------------------------------------------------- 诊断不串味（#2）

@@ -4,7 +4,7 @@
       "command": "/bin/sh",
       "args": [
         "-c",
-        "S=\"git+https://github.com/HelloYoung2025/ads-control-plane@v0.1.1\"\n# SFW 是从访达启动的图形程序，它的 PATH 不一定包含 uv 装的地方（装到 ~/.local/bin 的\n# 那种在 GUI 里通常看不见）。所以不直接写 uvx，而是把常见的几处挨个试一遍。\nfor u in \"$HOME/.local/bin/uvx\" /opt/homebrew/bin/uvx /usr/local/bin/uvx uvx; do\n  command -v \"$u\" >/dev/null 2>&1 && exec \"$u\" --from \"$S\" amazon-ads-mcp\ndone\necho \"这台电脑上找不到 uv。打开「终端」粘这一行装上，再回 SFW 重开一个对话：\" >&2\necho \"  curl -LsSf https://astral.sh/uv/install.sh | sh\" >&2\nexit 127"
+        "S=\"git+https://github.com/HelloYoung2025/ads-control-plane@v0.1.2\"\n# SFW 是从访达启动的图形程序，它的 PATH 不一定包含 uv 装的地方（装到 ~/.local/bin 的\n# 那种在 GUI 里通常看不见）。所以不直接写 uvx，而是把常见的几处挨个试一遍。\nfor u in \"$HOME/.local/bin/uvx\" /opt/homebrew/bin/uvx /usr/local/bin/uvx uvx; do\n  command -v \"$u\" >/dev/null 2>&1 && exec \"$u\" --from \"$S\" amazon-ads-mcp\ndone\necho \"这台电脑上找不到 uv。打开「终端」粘这一行装上，再回 SFW 重开一个对话：\" >&2\necho \"  curl -LsSf https://astral.sh/uv/install.sh | sh\" >&2\nexit 127"
       ],
       "startup_timeout_sec": 600,
       "tool_timeout_sec": 3600
