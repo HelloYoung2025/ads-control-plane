@@ -26,6 +26,7 @@ from ads_control_plane.sfw.config import (
     DEFAULT_PORT,
     DEFAULT_ROOT,
     DEFAULT_RUN_LOG,
+    LINGXING_MCP_URL,
     MARKETPLACE_CURRENCY,
     NICKNAME_RE,
     SERVICE_USER,
@@ -124,7 +125,7 @@ def _uncomment_store_example(template: str) -> str:
 
 
 def _fill_lingxing(text: str) -> str:
-    return text.replace('url = ""', 'url = "http://lx.invalid/mcp"').replace(
+    return text.replace(f'url = "{LINGXING_MCP_URL}"', 'url = "http://lx.invalid/mcp"').replace(
         'key = ""', 'key = "sk-test-key"'
     )
 
@@ -140,7 +141,8 @@ def test_template_is_valid_toml_with_the_documented_defaults() -> None:
     assert document["export_dir"] == str(DEFAULT_EXPORT_DIR)
     assert document["run_log_path"] == str(DEFAULT_RUN_LOG)
     assert document["time_budget_seconds"] == 2700
-    assert document["lingxing"] == {"url": "", "key": ""}
+    # url 所有人都一样（领星帮助中心，2026-09-24），写好了；key 是每个人自己的，空着。
+    assert document["lingxing"] == {"url": LINGXING_MCP_URL, "key": ""}
     assert "stores" not in document, "店铺表只能是注释示例：安装时还不知道有哪些店"
     assert document["thresholds"] == {
         "lookback_days": 30,
@@ -203,6 +205,8 @@ def test_check_private_file_refuses_group_or_world_readable_modes(
         check_private_file(path, expect_uid=None)
     _assert_contract(info.value, "CONFIG_TOO_OPEN")
     assert f"{mode:04o}" in str(info.value)
+    # 给出能照着粘的那一行：插件形态的人不知道 0600 是什么，也没有管理员可找。
+    assert f"chmod 600 '{path}'" in str(info.value)
 
 
 @pytest.mark.parametrize("mode", [0o600, 0o400])
@@ -297,6 +301,17 @@ def test_nickname_regex_accepts_words_in_any_script_without_spaces(nickname: str
 def test_store_currency_without_a_threshold_is_refused() -> None:
     exc = _refused(VALID.replace('JPY = "3000"\n', ""), "CURRENCY_THRESHOLD_MISSING")
     assert "日本店" in str(exc) and "JPY" in str(exc)
+
+
+def test_every_currency_without_a_threshold_is_named_at_once() -> None:
+    """五个站点的卖家此前要补一个币种、问一轮，再补下一个（2026-09-24 评审）。"""
+    extra = (
+        '[[stores]]\nprofile_id = "2000000000000007"\nsid = "2000000000000009"\n'
+        'marketplace = "CA"\ncurrency = "CAD"\nnickname = "加拿大店"\n\n'
+    )
+    text = VALID.replace('JPY = "3000"\n', "").replace("[thresholds]\n", extra + "[thresholds]\n")
+    exc = _refused(text, "CURRENCY_THRESHOLD_MISSING")
+    assert "JPY（日本店）" in str(exc) and "CAD（加拿大店）" in str(exc)
 
 
 @pytest.mark.parametrize(
@@ -438,7 +453,8 @@ def test_paths_default_to_the_shared_export_locations() -> None:
 
 
 def test_lingxing_credentials_must_be_filled_before_the_pack_runs() -> None:
-    _refused(VALID.replace('key = "sk-test-key"', 'key = ""'), "LINGXING_CREDENTIALS_MISSING")
+    exc = _refused(VALID.replace('key = "sk-test-key"', 'key = ""'), "LINGXING_CREDENTIALS_MISSING")
+    assert "key" in str(exc) and "url" not in str(exc)
     _refused(
         VALID.replace('key = "sk-test-key"', 'key = "sk-test-key "'), "LINGXING_CREDENTIALS_MISSING"
     )
@@ -458,6 +474,56 @@ def test_unknown_key_missing_key_wrong_type_and_bad_toml_are_all_refused() -> No
     _refused(VALID.replace("min_clicks = 25", "min_clicks = 25.0"), "CONFIG_SHAPE")
     _refused(VALID.replace('nickname = "美国店"', "nickname = 1"), "CONFIG_SHAPE")
     _refused("this is = not toml", "CONFIG_SYNTAX")
+
+
+def test_both_missing_credentials_are_named_in_one_go() -> None:
+    """逐项报的话，只填了 url 的人要再问一轮才知道 key 也要填（2026-09-24 评审）。"""
+    text = VALID.replace('url = "http://lx.invalid/mcp"', 'url = ""').replace(
+        'key = "sk-test-key"', 'key = ""'
+    )
+    exc = _refused(text, "LINGXING_CREDENTIALS_MISSING")
+    assert "url 和 key" in str(exc)
+
+
+#: VALID 里 key 那一行的行号（VALID 以换行开头，所以不是 10）。
+KEY_LINE = VALID.splitlines().index('key = "sk-test-key"') + 1
+
+
+@pytest.mark.parametrize(
+    "broken",
+    [
+        "key = sk-test-key",  # 选中两个引号再粘：引号被盖掉了
+        'key = "sk-test-key\n[[stores]]',  # 光标还在引号里就接着粘了一段店铺
+        'key ＝ "sk-test-key"',  # 中文输入法的全角等号
+    ],
+)
+def test_a_syntax_error_says_which_line_in_chinese_without_echoing_it(broken: str) -> None:
+    """此前原样转述 tomllib 的英文（「Invalid value (at line 24, column 7)」）。
+    那一行可能就是 key，而这句话会被念进对话，所以只报行号，不回显内容。"""
+    exc = _refused(VALID.replace('key = "sk-test-key"', broken), "CONFIG_SYNTAX")
+    message = str(exc)
+    assert f"第 {KEY_LINE} 行" in message
+    assert "sk-test-key" not in message
+    assert "at line" not in message and "Invalid" not in message
+
+
+def test_curly_quotes_are_named_as_the_cause() -> None:
+    """「文本编辑」和中文输入法会把手敲的直引号换成弯引号，新手几乎看不出差别。"""
+    text = VALID.replace('key = "sk-test-key"', "key = “sk-test-key”").replace(
+        'JPY = "3000"', "JPY = “3000”"
+    )
+    exc = _refused(text, "CONFIG_SYNTAX")
+    jpy_line = VALID.splitlines().index('JPY = "3000"') + 1
+    assert f"第 {KEY_LINE}、{jpy_line} 行" in str(exc) and "弯引号" in str(exc)
+    assert "sk-test-key" not in str(exc)
+
+
+def test_curly_quotes_inside_a_comment_are_not_blamed() -> None:
+    text = VALID.replace("[lingxing]\n", "[lingxing]\n# 别写成 “abc”\n").replace(
+        'key = "sk-test-key"', "key = sk-test-key"
+    )
+    exc = _refused(text, "CONFIG_SYNTAX")
+    assert "弯引号" not in str(exc)
 
 
 # ------------------------------------------------------------------ 绑定表

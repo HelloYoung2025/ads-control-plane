@@ -14,6 +14,7 @@ import subprocess
 import sys
 import uuid
 from collections.abc import Callable, Sequence
+from importlib.metadata import version
 from pathlib import Path
 
 from ads_control_plane.adapters.lx_read import LxReadError
@@ -239,6 +240,8 @@ _HANDLERS: dict[str, Callable[[argparse.Namespace], int]] = {
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="amazon-ads", description="SFW 电商 Pack：只读否定词组件")
+    # 插件的启动脚本靠它判断装在 ~/.local/bin 的那份是不是清单上这一版（见 .mcp.json）。
+    parser.add_argument("--version", action="version", version=version("ads-control-plane"))
     commands = parser.add_subparsers(dest="command", required=True)
 
     def with_config(sub: argparse.ArgumentParser) -> argparse.ArgumentParser:
@@ -297,10 +300,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
     except LxReadError as exc:
         detail = getattr(exc, "error_details", None)
+        # 指向这次真正读的那份配置：插件形态的人跑的是 --config ~/.amazon-ads/config.toml，
+        # 叫他 sudo -e 系统那份，改了也没用（2026-09-24 评审）。
+        config = Path(getattr(args, "config", DEFAULT_CONFIG_PATH))
+        edit = f"sudo -e '{config}'" if config == DEFAULT_CONFIG_PATH else f"open -e '{config}'"
         print(
             f"错误：领星取数失败（{exc.code}）：{exc}"
             + (f"；网关原话：{detail}" if detail else "")
-            + f"；核对 [lingxing] 的 url 与 key（sudo -e '{DEFAULT_CONFIG_PATH}'），改完重跑。",
+            + f"；核对 [lingxing] 的 url 与 key（{edit}），改完重跑。",
             file=sys.stderr,
         )
         return 1
