@@ -432,6 +432,19 @@ class TestGatewayRefusalIsNotANetworkError:
         assert "bad key" in str(e.value) and key not in str(e.value)
         assert key not in str(e.value.error_details)
 
+    def test_no_fragment_of_the_key_survives_a_long_message(self) -> None:
+        """先截断再抹 key，key 跨在截断处就会留下半截（2026-09-24 Codex 复审 P2）：
+        客户端里不截断，截断留给写日志的那一层，那时 key 已经抹掉了。"""
+        key = "sk-secret-0123456789"
+        for pad in range(270, 300):
+            words = "x" * pad + key
+
+            async def refuse(words: str = words) -> None:
+                raise MCPError(-32600, words)
+
+            got = str(self._through_the_client(refuse, key=key))
+            assert key[:6] not in got[:400], pad
+
     def test_a_request_that_never_answers_times_out_as_a_network_error(self) -> None:
         """网关只发保活、不给结果：没有每次请求的上限，线程和两把锁会一直占着。"""
 

@@ -390,7 +390,9 @@ def classify_mcp_error(exc: MCPError, statuses: Sequence[int]) -> LxReadError:
     再问多少次都一样。2026-09-24 评审在假网关上复现：这些此前全被当成网络错误，
     每页白问 3 次，网关原话一个字没留下。
     """
-    said = f"code={exc.code} {exc.message}"[:300]
+    # 不在这里截断：先截断再抹 key，key 跨在截断处就会留下半截（2026-09-24 Codex 复审 P2）。
+    # 抹 key 在 fetch_page，截断留给写日志的那一层。
+    said = f"code={exc.code} {exc.message}"
     if exc.code in _NOT_ASKED_CODES or any(_asked_again_may_help(s) for s in statuses):
         return LxTransportError(f"gateway call failed at transport level: {said}")
     return LxGatewayError(f"gateway refused the call: {said}", error_details=said)
@@ -554,7 +556,7 @@ class LxMcpReadClient:
                 raise LxGatewayError(
                     # 网关原话（含 msg 与 traceId，不含 key）进消息：只放在 error_details
                     # 里时，日志只剩这半句，看不出是参数错、版本过期还是权限不够。
-                    f"gateway rejected the action call at MCP level: {said[:300]}",
+                    f"gateway rejected the action call at MCP level: {said}",
                     error_details=said,
                 )
             structured: object = result.structured_content
