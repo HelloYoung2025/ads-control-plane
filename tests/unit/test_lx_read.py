@@ -351,34 +351,33 @@ class TestGatewayRefusalIsNotANetworkError:
 
     def test_a_4xx_refusal_is_a_gateway_error(self) -> None:
         for status in (401, 403, 404):
-            got = classify_mcp_error(HTTP_REFUSED, [200, 202, status], key="k")
+            got = classify_mcp_error(HTTP_REFUSED, [200, 202, status])
             assert got.code == "LX_GATEWAY_ERROR", status
 
     def test_a_wrong_path_is_a_gateway_error(self) -> None:
-        got = classify_mcp_error(MCPError(METHOD_NOT_FOUND, "Not Found"), [404], key="k")
+        got = classify_mcp_error(MCPError(METHOD_NOT_FOUND, "Not Found"), [404])
         assert got.code == "LX_GATEWAY_ERROR"
 
     def test_server_trouble_is_worth_asking_again(self) -> None:
         for status in (500, 502, 503, 429, 408):
-            assert classify_mcp_error(HTTP_REFUSED, [200, status], key="k").code == (
-                "LX_TRANSPORT_ERROR"
-            ), status
+            assert classify_mcp_error(HTTP_REFUSED, [200, status]).code == ("LX_TRANSPORT_ERROR"), (
+                status
+            )
 
     def test_minus_32001_from_the_gateway_is_the_gateway_talking(self) -> None:
         """SDK 拿 -32001 表示本地超时，网关也可能拿它说「key 无效」（评审的假网关就这么回）。
         本地超时我们自己计时（TimeoutError），所以收到的 -32001 只能是网关的回答。"""
         said = MCPError(-32001, "X-Mcp-Key 无效或已过期")
-        assert classify_mcp_error(said, [200], key="k").code == "LX_GATEWAY_ERROR"
+        assert classify_mcp_error(said, [200]).code == "LX_GATEWAY_ERROR"
 
-    def test_the_gateways_words_are_kept_but_the_key_is_not(self) -> None:
-        said = MCPError(-32600, "Unauthorized: invalid X-Mcp-Key secret-abc")
-        got = classify_mcp_error(said, [401], key="secret-abc")
-        assert "Unauthorized: invalid X-Mcp-Key" in str(got)
-        assert "secret-abc" not in str(got)
-        assert "secret-abc" not in str(getattr(got, "error_details", ""))
+    def test_the_gateways_words_are_kept(self) -> None:
+        said = MCPError(-32600, "Unauthorized: invalid X-Mcp-Key")
+        assert "Unauthorized: invalid X-Mcp-Key" in str(classify_mcp_error(said, [401]))
 
     @staticmethod
-    def _through_the_client(initialize: object, *, timeout: float = 60.0) -> LxReadError:
+    def _through_the_client(
+        initialize: object, *, timeout: float = 60.0, key: str = "k"
+    ) -> LxReadError:
         """走一遍真的 _call_action，只换掉传输与会话（不触网）。"""
 
         @contextlib.asynccontextmanager
@@ -396,7 +395,7 @@ class TestGatewayRefusalIsNotANetworkError:
                 return None
 
         client = LxMcpReadClient(
-            url="http://x", key="k", min_interval_seconds=0, timeout_seconds=timeout
+            url="http://x", key=key, min_interval_seconds=0, timeout_seconds=timeout
         )
         with (
             patch.object(lx_read, "streamable_http_client", no_network),
@@ -411,6 +410,27 @@ class TestGatewayRefusalIsNotANetworkError:
             raise HTTP_REFUSED
 
         assert self._through_the_client(refuse).code == "LX_GATEWAY_ERROR"
+
+    def test_the_key_never_leaves_the_client_in_an_error(self) -> None:
+        """网关原话跟着错误进日志（search_terms 带上 str(exc)）。网关要是回显请求头，
+        key 不能跟着出去——MCP 层的拒绝和信封里的拒绝都一样（2026-09-24 Codex 复审 P2）。"""
+        key = "sk-secret-0123456789"
+
+        async def refuse() -> None:
+            raise MCPError(-32600, f"Unauthorized: invalid X-Mcp-Key {key}")
+
+        from_mcp = self._through_the_client(refuse, key=key)
+        assert "Unauthorized" in str(from_mcp) and key not in str(from_mcp)
+
+        client = LxMcpReadClient(url="http://x", key=key, min_interval_seconds=0)
+        refused = {"code": 102, "success": False, "msg": f"bad key {key}", "error_details": [key]}
+        with (
+            patch.object(LxMcpReadClient, "_perform_call", return_value=refused),
+            pytest.raises(LxGatewayError) as e,
+        ):
+            client.fetch_page("ad_campaign_report", {"page": 1})
+        assert "bad key" in str(e.value) and key not in str(e.value)
+        assert key not in str(e.value.error_details)
 
     def test_a_request_that_never_answers_times_out_as_a_network_error(self) -> None:
         """网关只发保活、不给结果：没有每次请求的上限，线程和两把锁会一直占着。"""

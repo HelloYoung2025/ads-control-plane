@@ -381,19 +381,29 @@ def _asked_again_may_help(status: int) -> bool:
     return status >= 500 or status in (408, 429)
 
 
-def classify_mcp_error(exc: MCPError, statuses: Sequence[int], *, key: str) -> LxReadError:
+def classify_mcp_error(exc: MCPError, statuses: Sequence[int]) -> LxReadError:
     """SDK 把 HTTP ≥400 和 JSON-RPC error 都变成 MCPError；这里把它分回「没问到」和「被拒」。
 
     SDK 里 401、403、5xx 是同一句 INTERNAL_ERROR「Server returned an error response」，
     分不出来，所以要看这次连接上见过的 HTTP 状态码：5xx（和 408/429）当网关一时出错，
     可以再问；其余一律是网关的拒绝——错 key、错地址、http 协议、贴成了网页地址——
     再问多少次都一样。2026-09-24 评审在假网关上复现：这些此前全被当成网络错误，
-    每页白问 3 次，网关原话一个字没留下。原话进消息之前先把 key 抹掉。
+    每页白问 3 次，网关原话一个字没留下。
     """
-    said = f"code={exc.code} {exc.message}".replace(key, "***")[:300]
+    said = f"code={exc.code} {exc.message}"[:300]
     if exc.code in _NOT_ASKED_CODES or any(_asked_again_may_help(s) for s in statuses):
         return LxTransportError(f"gateway call failed at transport level: {said}")
     return LxGatewayError(f"gateway refused the call: {said}", error_details=said)
+
+
+def _scrub(value: object, key: str) -> object:
+    if isinstance(value, str):
+        return value.replace(key, "***")
+    if isinstance(value, Mapping):
+        return {k: _scrub(v, key) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_scrub(v, key) for v in value]
+    return value
 
 
 def _exception_summary(exc: BaseException) -> str:
@@ -466,16 +476,24 @@ class LxMcpReadClient:
             ) from exc
         envelope: dict[str, object] = {"toolId": tool_id, "params": encoded}
         try:
-            payload = self._perform_call(envelope)
-        finally:
-            # QPS 保守：无论成败都保持调用间隔，避免错误重试冲垮网关限额。
-            if self._min_interval_seconds > 0:
-                time.sleep(self._min_interval_seconds)
-        if tool_id == ERP_LISTING_TOOL_ID:
-            return parse_erp_envelope(payload)
-        if tool_id == AUTH_SHOPS_TOOL_ID:
-            return parse_auth_shops_envelope(payload)
-        return parse_ad_report_envelope(payload)
+            try:
+                payload = self._perform_call(envelope)
+            finally:
+                # QPS 保守：无论成败都保持调用间隔，避免错误重试冲垮网关限额。
+                if self._min_interval_seconds > 0:
+                    time.sleep(self._min_interval_seconds)
+            if tool_id == ERP_LISTING_TOOL_ID:
+                return parse_erp_envelope(payload)
+            if tool_id == AUTH_SHOPS_TOOL_ID:
+                return parse_auth_shops_envelope(payload)
+            return parse_ad_report_envelope(payload)
+        except LxReadError as exc:
+            # 网关原话跟着错误一路进日志；网关要是回显了请求头，key 就跟着进去了。
+            # 带原话出本类的错误都从这里走，就在这一处把 key 抹掉（2026-09-24 Codex 复审 P2）。
+            exc.args = tuple(_scrub(arg, self._key) for arg in exc.args)
+            if isinstance(exc, LxGatewayError):
+                exc.error_details = _scrub(exc.error_details, self._key)
+            raise
 
     def _perform_call(self, envelope: Mapping[str, object]) -> Mapping[str, object]:
         """一次网关 action 调用的同步外壳。测试以假体替换本方法，不触网络。
@@ -525,14 +543,14 @@ class LxMcpReadClient:
                 async with asyncio.timeout(self._timeout_seconds):
                     result = await session.call_tool(ACTION_TOOL_NAME, dict(envelope))
             except MCPError as exc:
-                raise classify_mcp_error(exc, statuses, key=self._key) from exc
+                raise classify_mcp_error(exc, statuses) from exc
             if not isinstance(result, CallToolResult):
                 raise LxGatewayError(
                     "gateway returned an unexpected MCP result type",
                     error_details=type(result).__name__,
                 )
             if result.is_error:
-                said = (_content_text(result) or "").replace(self._key, "***")
+                said = _content_text(result) or ""
                 raise LxGatewayError(
                     # 网关原话（含 msg 与 traceId，不含 key）进消息：只放在 error_details
                     # 里时，日志只剩这半句，看不出是参数错、版本过期还是权限不够。
